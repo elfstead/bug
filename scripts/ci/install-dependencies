@@ -14,18 +14,20 @@ case $(uname -s) in
             libxi-dev libxrandr-dev libxinerama-dev libxcb-icccm4-dev libgl1-mesa-dev \
             libegl1-mesa-dev libdrm-dev libpulse-dev libdbus-1-dev libudev-dev glslang-tools fonts-liberation2 \
             xvfb xauth xdotool xclip ccache
-        python3 -m venv build/ci-python
-        build/ci-python/bin/pip install cmake==3.31.6
-        echo "$PWD/build/ci-python/bin" >> "$GITHUB_PATH"
         echo 'CC=clang-19' >> "$GITHUB_ENV"
         echo 'CXX=clang++-19' >> "$GITHUB_ENV"
         ;;
     Darwin)
-        brew install autoconf autoconf-archive automake cmake libtool nasm ninja pkgconf ccache
+        brew install autoconf autoconf-archive automake libtool nasm ninja pkgconf ccache
         echo "CC=$(xcrun --find clang)" >> "$GITHUB_ENV"
         echo "CXX=$(xcrun --find clang++)" >> "$GITHUB_ENV"
         echo 'MACOSX_DEPLOYMENT_TARGET=15.0' >> "$GITHUB_ENV"
         ;;
     *) exit 1 ;;
 esac
+# vcpkg includes CMake's version in every package ABI. Runner image updates must
+# not silently invalidate the dependency cache between retries.
+python3 -m venv build/ci-python
+build/ci-python/bin/pip install cmake==3.31.6
+echo "$PWD/build/ci-python/bin" >> "$GITHUB_PATH"
 rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy

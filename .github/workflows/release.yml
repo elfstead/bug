@@ -126,6 +126,7 @@ jobs:
             build/engine/vcpkg-manifest-install.log
             build/engine/CMakeFiles/CMakeConfigureLog.yaml
             vendor/vcpkg/buildtrees/**/*.log
+            vendor/vcpkg/buildtrees/**/*.vcpkg_abi_info.txt
           if-no-files-found: ignore
           retention-days: 7
 

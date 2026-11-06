@@ -15,6 +15,20 @@ index 7a8777be..d6eec9cc 100644
  
      # Android has no Compositor process yet, so it keeps Skia elsewhere.
      if (NOT ANDROID AND NOT VCPKG_TARGET_ANDROID)
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index cf26ab66..f5d44758 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -155,7 +155,8 @@ static int mmap_anonymous_fd([[maybe_unused]] MemoryTag tag)
+ {
+ #ifdef AK_OS_MACOS
+     if (tag == MemoryTag::GarbageCollector)
+-        return VM_MAKE_TAG(VM_MEMORY_APPLICATION_SPECIFIC_2);
++        // Older macOS SDKs name only the endpoints of the application tag range.
++        return VM_MAKE_TAG(VM_MEMORY_APPLICATION_SPECIFIC_1 + 1);
+ #endif
+     return -1;
+ }
 diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
 index db582e3c..9d4b52fa 100644
 --- a/Meta/CMake/check_for_dependencies.cmake

@@ -115,6 +115,13 @@ Ladybird revision: `7786ab9c13f000a7f9fcd75248ee10d691a29195`.
   frontend patch now appends the Cargo pool while preserving the linker pool.
   A real local engine build with CI's `LAGOM_LINK_POOL_SIZE=1` passed, and Ninja's
   generated rules contain both pools.
+- macOS compilation then exposed a memory-tag name absent from the macOS 15
+  SDK. The compatibility patch uses the same value, `APPLICATION_SPECIFIC_1 + 1`,
+  within Apple's reserved application tag range; see the
+  [older SDK definition](https://github.com/apple-oss-distributions/xnu/blob/xnu-11215.81.4/osfmk/mach/vm_statistics.h)
+  and [current definition](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/vm_statistics.h).
+  CMake is pinned on both CI platforms because runner-provided patch versions
+  differed between Mac runs and invalidated vcpkg's binary cache.
 
 ## Limits
 
