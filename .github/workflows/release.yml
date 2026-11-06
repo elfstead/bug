@@ -83,6 +83,14 @@ jobs:
         run: |
           mkdir -p build/vcpkg-cache
           echo "VCPKG_BINARY_SOURCES=clear;files,$PWD/build/vcpkg-cache,readwrite" >> "$GITHUB_ENV"
+      - name: Restore compiled Rust engine crates
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        id: rust-cache
+        with:
+          path: build/engine/cargo
+          key: release-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ladybird-revision', 'rust-toolchain.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            release-rust-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ladybird-revision', 'rust-toolchain.toml') }}-
       - name: Check macOS system clipboard
         if: runner.os == 'macOS'
         run: cargo test --locked --lib clients::clipboard::tests::macos_system_clipboard_interoperates_with_pbcopy_and_pbpaste -- --ignored --exact
@@ -129,6 +137,12 @@ jobs:
             vendor/vcpkg/buildtrees/**/*.vcpkg_abi_info.txt
           if-no-files-found: ignore
           retention-days: 7
+      - name: Preserve compiled Rust engine crates after failures
+        if: always() && !cancelled() && steps.rust-cache.outcome == 'success'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/engine/cargo
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
 
   publish:
     name: Publish release

@@ -79,6 +79,20 @@ index 3b3e6214..4385e547 100644
  list(JOIN RUSTC_TARGET_FLAGS " " RUSTC_TARGET_FLAGS)
  
  # import_rust_crate(MANIFEST_PATH path/to/Cargo.toml CRATE_NAME name [PANIC_UNWIND] [NO_DEFAULT_FEATURES]
+diff --git a/Services/Compositor/VSyncScheduler.cpp b/Services/Compositor/VSyncScheduler.cpp
+index 1787ebe5..78927221 100644
+--- a/Services/Compositor/VSyncScheduler.cpp
++++ b/Services/Compositor/VSyncScheduler.cpp
+@@ -218,8 +218,8 @@ void DisplayLinkState::stop_display_link()
+ #    pragma clang diagnostic push
+ #    pragma clang diagnostic ignored "-Wdeprecated-declarations"
+     CVDisplayLinkStop(display_link);
+-#    pragma clang diagnostic pop
+     CVDisplayLinkRelease(display_link);
++#    pragma clang diagnostic pop
+     display_link = nullptr;
+ }
+ 
 diff --git a/UI/cmake/ResourceFiles.cmake b/UI/cmake/ResourceFiles.cmake
 index e820f734..f8419927 100644
 --- a/UI/cmake/ResourceFiles.cmake
