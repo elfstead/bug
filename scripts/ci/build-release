@@ -40,6 +40,7 @@ scripts/build-engine \
     -DVCPKG_TARGET_TRIPLET="$bug_triplet" -DVCPKG_HOST_TRIPLET="$bug_triplet" \
     -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_CI_BASELINE_CPU=ON -DLAGOM_LINK_POOL_SIZE=1 \
+    -DENABLE_LAGOM_CCACHE=ON \
     "${bug_args[@]}"
 cargo build --locked --release
 # Preserve license texts for all Rust dependencies, including target-specific ones.
