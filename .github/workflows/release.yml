@@ -40,13 +40,15 @@ jobs:
           - runner: ubuntu-24.04
             platform: linux-x64
             machine: x86_64
+            jobs: 4
           - runner: macos-15
             platform: macos-arm64
             machine: arm64
+            jobs: 2
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 360
     env:
-      BUG_JOBS: '2'
+      BUG_JOBS: ${{ matrix.jobs }}
       VCPKG_DISABLE_METRICS: '1'
       PLATFORM: ${{ matrix.platform }}
       EXPECTED_MACHINE: ${{ matrix.machine }}
