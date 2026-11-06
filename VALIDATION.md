@@ -116,7 +116,11 @@ shortcuts for clipboard operations and the palette are implemented alongside
 the existing Control shortcuts. Cross-platform shortcut tests run on Linux.
 An opt-in macOS test exchanges multiline Unicode text with `pbcopy`/`pbpaste`,
 including persistence after the writer is dropped; release CI runs it before
-building the native engine. It has not been run locally on this Linux machine.
+building the native engine. This passed on the macOS 15 ARM64 runner in
+[run 42157605975](https://github.com/elfstead/bug/actions/runs/42157605975).
+The subsequent native build stopped before CMake because macOS Bash 3.2 treats
+an empty array as unset under `set -u`. The build wrapper now uses positional
+arguments, with a regression check run under each platform's Bash.
 Actual macOS window event delivery, input, and HiDPI still need Mac validation.
 
 These are prototype integration checks, not browser conformance or security

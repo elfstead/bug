@@ -2,12 +2,13 @@
 set -euo pipefail
 bug_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 "$bug_root/scripts/prepare-engine"
-bug_cmake_args=()
+# Use positional arguments: macOS Bash 3.2 treats empty arrays as unset under -u.
+# Prepend defaults so explicit caller arguments still take precedence in CMake.
 if [[ ${BUG_DEPENDENCIES:-system} != vcpkg ]]; then
-    bug_cmake_args+=("-DCMAKE_PREFIX_PATH=$bug_root/build/deps" "-DLLVM_LIBC_INCLUDE_DIR=$bug_root/build/deps/include")
+    set -- "-DCMAKE_PREFIX_PATH=$bug_root/build/deps" "-DLLVM_LIBC_INCLUDE_DIR=$bug_root/build/deps/include" "$@"
 fi
 if [[ -n ${BUG_ICU_ROOT:-} ]]; then
-    bug_cmake_args+=("-DICU_ROOT=$BUG_ICU_ROOT")
+    set -- "-DICU_ROOT=$BUG_ICU_ROOT" "$@"
 fi
 cmake -S "$bug_root/vendor/ladybird" -B "$bug_root/build/engine" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_BINDIR=bin -DCMAKE_INSTALL_LIBDIR=lib \
@@ -15,5 +16,5 @@ cmake -S "$bug_root/vendor/ladybird" -B "$bug_root/build/engine" -G Ninja \
     -DBUILD_TESTING=OFF -DENABLE_CLANG_PLUGINS=OFF -DENABLE_LAGOM_CCACHE=OFF \
     -DENABLE_LTO_FOR_RELEASE=OFF \
     -DBUG_FRONTEND_DIR="$bug_root/native" \
-    "${bug_cmake_args[@]}" "$@"
+    "$@"
 cmake --build "$bug_root/build/engine" --target bug_engine --parallel "${BUG_JOBS:-4}"
