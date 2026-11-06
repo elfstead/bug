@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bug_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+bug_revision=$(cat "$bug_root/ladybird-revision")
+bug_source="$bug_root/vendor/ladybird"
+mkdir -p "$bug_root/vendor"
+if [[ ! -d "$bug_source/.git" ]]; then
+    git init "$bug_source"
+    git -C "$bug_source" remote add origin https://github.com/LadybirdBrowser/ladybird.git
+    git -C "$bug_source" fetch --depth 1 origin "$bug_revision"
+    git -C "$bug_source" checkout --detach FETCH_HEAD
+fi
+if [[ $(git -C "$bug_source" rev-parse HEAD) != "$bug_revision" ]]; then
+    echo 'Ladybird revision differs from ladybird-revision; refusing to change your checkout.' >&2
+    exit 1
+fi
+for bug_patch in "$bug_root/patches/frontend.patch" "$bug_root/patches/api.patch"; do
+if git -C "$bug_source" apply --reverse --check "$bug_patch" 2>/dev/null; then
+    : # Already applied.
+else
+    git -C "$bug_source" apply --check "$bug_patch"
+    git -C "$bug_source" apply "$bug_patch"
+fi
+done
+
+# CI uses Ladybird's pinned vcpkg ports for all dependencies on both platforms.
+if [[ ${BUG_DEPENDENCIES:-system} == vcpkg ]]; then
+    exit 0
+fi
+
+# These dependencies are newer than the Ladybird package in our Nix snapshot.
+# Pin LLVM's header-only math library and zmij to Ladybird's own port versions.
+bug_llvm="$bug_root/vendor/llvm"
+bug_llvm_revision=e54169423e7ee5d8b41c2f1b6f7a59000c901ee0
+if [[ ! -f "$bug_llvm/libc/shared/math.h" ]]; then
+    if [[ ! -d "$bug_llvm/.git" ]]; then
+        git init "$bug_llvm"
+        git -C "$bug_llvm" remote add origin https://github.com/llvm/llvm-project.git
+    fi
+    git -C "$bug_llvm" config remote.origin.promisor true
+    git -C "$bug_llvm" config remote.origin.partialclonefilter blob:none
+    git -C "$bug_llvm" sparse-checkout set libc/hdr libc/include libc/shared libc/src/__support libc/src/string/memory_utils
+    git -C "$bug_llvm" fetch --filter=blob:none --depth 1 origin "$bug_llvm_revision"
+    git -C "$bug_llvm" checkout --detach FETCH_HEAD
+fi
+if [[ $(git -C "$bug_llvm" rev-parse HEAD) != "$bug_llvm_revision" ]]; then
+    echo 'LLVM checkout differs from the pinned math-header revision.' >&2
+    exit 1
+fi
+mkdir -p "$bug_root/build/deps/include"
+ln -sfn "$bug_llvm/libc" "$bug_root/build/deps/include/llvm-libc"
+
+bug_zmij="$bug_root/vendor/zmij"
+if [[ ! -d "$bug_zmij/.git" ]]; then
+    git clone --depth 1 --branch v1.2 https://github.com/vitaut/zmij.git "$bug_zmij"
+fi
+if [[ $(git -C "$bug_zmij" rev-parse HEAD) != d1682cb47e67474319ed146d3ca2c0e1a70f9429 ]]; then
+    echo 'zmij checkout differs from the pinned v1.2 revision.' >&2
+    exit 1
+fi
+bug_zmij_patch="$bug_source/Meta/CMake/vcpkg/overlay-ports/zmij/001-explicit-array-sizes.patch"
+if ! git -C "$bug_zmij" apply --reverse --check "$bug_zmij_patch" 2>/dev/null; then
+    git -C "$bug_zmij" apply "$bug_zmij_patch"
+fi
+cmake -S "$bug_zmij" -B "$bug_root/build/zmij" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DZMIJ_TEST=OFF -DZMIJ_EXAMPLE=OFF \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_INSTALL_PREFIX="$bug_root/build/deps"
+cmake --build "$bug_root/build/zmij"
+cmake --install "$bug_root/build/zmij"

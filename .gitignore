@@ -1,0 +1,8 @@
+/target/
+/build/
+/vendor/
+/result
+/dist/
+/.direnv/
+*.log
+__pycache__/

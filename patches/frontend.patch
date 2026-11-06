@@ -1,0 +1,74 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 7a8777be..d6eec9cc 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -140,7 +140,11 @@ endif()
+ 
+ if (ENABLE_GUI_TARGETS)
+     add_subdirectory(Services)
+-    add_subdirectory(UI)
++    if (BUG_FRONTEND_DIR)
++        add_subdirectory("${BUG_FRONTEND_DIR}" bug-native)
++    else()
++        add_subdirectory(UI)
++    endif()
+ 
+     # Android has no Compositor process yet, so it keeps Skia elsewhere.
+     if (NOT ANDROID AND NOT VCPKG_TARGET_ANDROID)
+diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
+index db582e3c..9d4b52fa 100644
+--- a/Meta/CMake/check_for_dependencies.cmake
++++ b/Meta/CMake/check_for_dependencies.cmake
+@@ -29,9 +29,14 @@ pkg_check_modules(WOFF2 REQUIRED IMPORTED_TARGET libwoff2dec)
+ 
+ # TODO: Figure out if we can do this the same way on all platforms
+ if (NOT ANDROID)
+-    pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec-ladybird)
+-    pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil-ladybird)
+-    pkg_check_modules(LIBSWRESAMPLE REQUIRED IMPORTED_TARGET libswresample-ladybird)
++    if (CMAKE_TOOLCHAIN_FILE MATCHES "vcpkg.cmake$")
++        set(BUG_FFMPEG_SUFFIX "-ladybird")
++    else()
++        set(BUG_FFMPEG_SUFFIX "")
++    endif()
++    pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec${BUG_FFMPEG_SUFFIX})
++    pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil${BUG_FFMPEG_SUFFIX})
++    pkg_check_modules(LIBSWRESAMPLE REQUIRED IMPORTED_TARGET libswresample${BUG_FFMPEG_SUFFIX})
+ else()
+     find_package(FFMPEG REQUIRED)
+ endif()
+@@ -147,7 +152,7 @@ else()
+     set(HAS_DIRECTX OFF CACHE BOOL "" FORCE)
+ endif()
+ 
+-if (ENABLE_GUI_TARGETS AND NOT (ANDROID OR VCPKG_TARGET_ANDROID))
++if (ENABLE_GUI_TARGETS AND NOT BUG_FRONTEND_DIR AND NOT (ANDROID OR VCPKG_TARGET_ANDROID))
+     set(LADYBIRD_QT_COMPONENTS Core Gui Widgets)
+     if (NOT APPLE)
+         list(APPEND LADYBIRD_QT_COMPONENTS Positioning)
+diff --git a/Meta/CMake/rust_crate.cmake b/Meta/CMake/rust_crate.cmake
+index 3b3e6214..110de539 100644
+--- a/Meta/CMake/rust_crate.cmake
++++ b/Meta/CMake/rust_crate.cmake
+@@ -22,7 +22,7 @@ if (NOT DEFINED CACHE{RUST_TARGET_TRIPLE})
+ endif()
+ 
+ # Compiler flags shared by Rust libraries, binaries, and tests.
+-set(RUSTC_TARGET_FLAGS -Dwarnings ${RUSTC_TARGET_CPU_FLAGS} ${RUSTC_TARGET_FRAME_POINTER_FLAGS})
++set(RUSTC_TARGET_FLAGS ${RUSTC_TARGET_CPU_FLAGS} ${RUSTC_TARGET_FRAME_POINTER_FLAGS})
+ list(JOIN RUSTC_TARGET_FLAGS " " RUSTC_TARGET_FLAGS)
+ 
+ # import_rust_crate(MANIFEST_PATH path/to/Cargo.toml CRATE_NAME name [PANIC_UNWIND] [NO_DEFAULT_FEATURES]
+diff --git a/UI/cmake/ResourceFiles.cmake b/UI/cmake/ResourceFiles.cmake
+index e820f734..f8419927 100644
+--- a/UI/cmake/ResourceFiles.cmake
++++ b/UI/cmake/ResourceFiles.cmake
+@@ -116,7 +116,7 @@ function(copy_resource_set subdir)
+         return()
+     endif()
+ 
+-    if (APPLE)
++    if (APPLE AND NOT BUG_FRONTEND_DIR)
+         target_sources(${COPY_TARGET} PRIVATE ${inputs})
+         set_source_files_properties(${inputs} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/${subdir}")
+     else()

@@ -1,0 +1,10 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Bug renderer smoke test</title>
+<style>body{font:24px sans-serif;background:#eef3eb;padding:3rem}button,input{font:inherit}#box{width:100px;height:100px;background:#577c50;animation:spin 4s linear infinite}@keyframes spin{to{transform:rotate(360deg)}} </style>
+<h1>A page, a window, your tools.</h1>
+<p>This is ordinary web content rendered by Ladybird.</p>
+<button onclick="document.title='Bug click OK';this.textContent='Clicked'">Test pointer input</button>
+<input placeholder="Test keyboard input" oninput="document.title='Bug input: '+this.value">
+<p><a href="about:blank" target="_blank">Open another window</a></p>
+<div id="box"></div>

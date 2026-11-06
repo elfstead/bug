@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bug_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$bug_root"
+export BUG_BUILD_COMMIT=${BUG_BUILD_COMMIT:-$(git rev-parse HEAD)}
+export BUG_BUILD_ID=${BUG_BUILD_ID:-snapshot-${BUG_BUILD_COMMIT:0:12}}
+export BUG_DEPENDENCIES=vcpkg
+export BUG_JOBS=${BUG_JOBS:-2}
+export CMAKE_BUILD_PARALLEL_LEVEL=$BUG_JOBS
+export VCPKG_MAX_CONCURRENCY=$BUG_JOBS
+scripts/prepare-engine
+python3 scripts/ci/release-manifest.py
+bug_baseline=$(python3 -c 'import json; print(json.load(open("build/release-manifest/vcpkg.json"))["builtin-baseline"])')
+if [[ ! -d vendor/vcpkg/.git ]]; then
+    # Versioned ports need historical trees; do not use a shallow clone.
+    git clone --filter=blob:none https://github.com/microsoft/vcpkg.git vendor/vcpkg
+fi
+git -C vendor/vcpkg checkout --detach "$bug_baseline"
+vendor/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+bug_args=()
+case $(uname -s)-$(uname -m) in
+    Linux-x86_64)
+        bug_triplet=x64-linux-dynamic
+        bug_args+=("-DLAGOM_USE_LINKER=lld" "-DCMAKE_LINKER=/usr/bin/ld.lld-19")
+        ;;
+    Darwin-arm64)
+        bug_triplet=arm64-osx-dynamic
+        export MACOSX_DEPLOYMENT_TARGET=15.0
+        bug_args+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=$MACOSX_DEPLOYMENT_TARGET" "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-headerpad_max_install_names" "-DCMAKE_EXE_LINKER_FLAGS=-Wl,-headerpad_max_install_names")
+        ;;
+    *) echo 'Release builds support Linux x86_64 and macOS arm64 only.' >&2; exit 1 ;;
+esac
+scripts/build-engine \
+    -DCMAKE_TOOLCHAIN_FILE="$bug_root/vendor/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+    -DVCPKG_MANIFEST_DIR="$bug_root/build/release-manifest" \
+    -DVCPKG_INSTALLED_DIR="$bug_root/build/engine/vcpkg_installed" \
+    '-DVCPKG_INSTALL_OPTIONS=--clean-packages-after-build;--clean-buildtrees-after-build' \
+    -DVCPKG_OVERLAY_PORTS="$bug_root/vendor/ladybird/Meta/CMake/vcpkg/overlay-ports" \
+    -DVCPKG_OVERLAY_TRIPLETS="$bug_root/vendor/ladybird/Meta/CMake/vcpkg/release-triplets" \
+    -DVCPKG_TARGET_TRIPLET="$bug_triplet" -DVCPKG_HOST_TRIPLET="$bug_triplet" \
+    -DCMAKE_C_COMPILER="$CC" -DCMAKE_CXX_COMPILER="$CXX" \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_CI_BASELINE_CPU=ON -DLAGOM_LINK_POOL_SIZE=1 \
+    "${bug_args[@]}"
+cargo build --locked --release
+# Preserve license texts for all Rust dependencies, including target-specific ones.
+cargo vendor --locked --sync vendor/ladybird/Cargo.toml build/rust-vendor > build/rust-vendor-config.toml

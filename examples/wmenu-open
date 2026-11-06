@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Usage: examples/wmenu-open /path/to/bug.commands
+set -euo pipefail
+if [[ $# != 1 || ! -p $1 ]]; then
+    echo 'Usage: wmenu-open PATH_TO_COMMAND_FIFO' >&2
+    exit 2
+fi
+bug_url=$(wmenu -p 'URL') || exit 0
+[[ -n $bug_url ]] || exit 0
+python3 - "$1" "$bug_url" <<'PY'
+import json, sys
+with open(sys.argv[1], 'w') as commands:
+    commands.write(json.dumps({'cmd': 'open', 'url': sys.argv[2]}) + '\n')
+PY

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+bug_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+test -x "$bug_root/target/debug/bug"
+test -x "$bug_root/build/engine/bin/WebContent"
+for binary in "$bug_root/target/debug/bug" "$bug_root/build/engine/lib/libbug_engine.so" "$bug_root/build/engine/bin/"*; do
+    [[ -x $binary ]] || continue
+    bug_linkage=$(ldd "$binary")
+    if [[ $bug_linkage == *libQt* || $bug_linkage == *'not found'* ]]; then
+        echo "FAIL: dependency check for $binary" >&2
+        echo "$bug_linkage" >&2
+        exit 1
+    fi
+done
+test -f "$bug_root/build/engine/lib/libbug_engine.so"
+echo 'PASS: host, bridge, and helper executables have no Qt dependency or missing shared libraries'

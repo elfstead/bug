@@ -1,0 +1,13 @@
+diff --git a/Libraries/LibWebView/Application.h b/Libraries/LibWebView/Application.h
+index 28206dfc..d798d3b0 100644
+--- a/Libraries/LibWebView/Application.h
++++ b/Libraries/LibWebView/Application.h
+@@ -274,7 +274,7 @@ public:
+     void push_webdriver_session_config(WebContentPage&);
+     void update_webdriver_session_config(Badge<WebDriverBrowserConnection>, Function<void(WebDriverSessionConfig&)> update);
+     Optional<u64> webdriver_page_load_timeout() const;
+-    void complete_webdriver_content_command(u64 command_id, Web::WebDriver::Response);
++    virtual void complete_webdriver_content_command(u64 command_id, Web::WebDriver::Response);
+ 
+     Web::CompositorContextId allocate_compositor_context_id();
+     ErrorOr<void> connect_web_content_to_compositor(WebContentClient&);

@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    branches: ['master']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Identify source snapshot
+    runs-on: ubuntu-24.04
+    outputs:
+      build_id: ${{ steps.version.outputs.build_id }}
+      commit: ${{ steps.version.outputs.commit }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        run: python3 scripts/ci/version.py
+      - name: Check snapshot and milestone classification
+        run: python3 tests/release-version.py
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+            machine: x86_64
+          - runner: macos-15
+            platform: macos-arm64
+            machine: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    env:
+      BUG_JOBS: '2'
+      VCPKG_DISABLE_METRICS: '1'
+      PLATFORM: ${{ matrix.platform }}
+      EXPECTED_MACHINE: ${{ matrix.machine }}
+      BUG_BUILD_ID: ${{ needs.identity.outputs.build_id }}
+      BUG_BUILD_COMMIT: ${{ needs.identity.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check architecture
+        run: test "$(uname -m)" = "$EXPECTED_MACHINE"
+      - name: Install build tools
+        run: scripts/ci/install-dependencies
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            build/vcpkg-cache
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: release-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ladybird-revision', 'rust-toolchain.toml', 'Cargo.lock', 'patches/**', 'scripts/ci/**') }}
+      - name: Configure dependency cache
+        run: |
+          mkdir -p build/vcpkg-cache
+          echo "VCPKG_BINARY_SOURCES=clear;files,$PWD/build/vcpkg-cache,readwrite" >> "$GITHUB_ENV"
+      - name: Build Rust host and Qt-free Ladybird engine
+        run: scripts/ci/build-release
+      - name: Check Rust API and clients
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked
+          cargo test --locked --no-default-features
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --no-default-features -- -D warnings
+          env -u DISPLAY -u WAYLAND_DISPLAY cargo test --locked --no-default-features --test library -- --ignored
+      - name: Package with runtime libraries and licenses
+        run: python3 scripts/ci/package.py --platform "$PLATFORM"
+      - name: Test extracted archive away from the build tree
+        run: python3 scripts/ci/test-package.py "dist/bug-$BUG_BUILD_ID-$PLATFORM.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: bug-${{ needs.identity.outputs.build_id }}-${{ matrix.platform }}
+          path: dist/bug-${{ needs.identity.outputs.build_id }}-${{ matrix.platform }}.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  publish:
+    name: Publish release
+    needs: [identity, build]
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: bug-${{ needs.identity.outputs.build_id }}-*
+          merge-multiple: true
+          path: dist
+      - name: Publish both archives and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUILD_ID: ${{ needs.identity.outputs.build_id }}
+          COMMIT: ${{ needs.identity.outputs.commit }}
+          PRERELEASE: ${{ needs.identity.outputs.prerelease }}
+        working-directory: dist
+        shell: bash
+        run: |
+          set -euo pipefail
+          linux="bug-$BUILD_ID-linux-x64.tar.gz"
+          macos="bug-$BUILD_ID-macos-arm64.tar.gz"
+          test -s "$linux"
+          test -s "$macos"
+          sha256sum "$linux" "$macos" > SHA256SUMS
+          if gh release view "$BUILD_ID" --json isDraft > release-state.json; then
+            python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Refusing to replace a published release"'
+          else
+            gh release create "$BUILD_ID" --target "$COMMIT" --title "Bug $BUILD_ID" --draft --generate-notes --prerelease="$PRERELEASE"
+          fi
+          gh release upload "$BUILD_ID" "$linux" "$macos" SHA256SUMS --clobber
+          latest=true
+          if [[ "$PRERELEASE" == true ]]; then latest=false; fi
+          gh release edit "$BUILD_ID" --draft=false --prerelease="$PRERELEASE" --latest="$latest"

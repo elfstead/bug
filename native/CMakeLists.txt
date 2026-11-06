@@ -1,0 +1,15 @@
+add_library(bug_engine SHARED bridge.cpp)
+target_compile_features(bug_engine PRIVATE cxx_std_23)
+target_compile_options(bug_engine PRIVATE -fvisibility=default)
+target_link_libraries(bug_engine PRIVATE AK LibCore LibGfx LibIPC LibURL LibWebCommon LibWebView)
+set_target_properties(bug_engine PROPERTIES OUTPUT_NAME bug_engine)
+
+# Build the same sandboxed helpers the stock frontend uses, without its UI.
+add_dependencies(bug_engine ${ladybird_helper_processes})
+add_custom_target(ladybird DEPENDS bug_engine)
+include("${LADYBIRD_SOURCE_DIR}/UI/cmake/ResourceFiles.cmake")
+if(APPLE)
+    copy_resources_to_build("${CMAKE_BINARY_DIR}/Resources" bug_engine)
+else()
+    copy_resources_to_build("${CMAKE_BINARY_DIR}/share/Lagom" bug_engine)
+endif()
