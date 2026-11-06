@@ -99,9 +99,11 @@ Ladybird revision: `7786ab9c13f000a7f9fcd75248ee10d691a29195`.
   Its packaging step audits and relocates the dependency closure, then tests
   the extracted archive without library-path overrides. Linux also runs the
   windowed smoke test under Xvfb.
-- Full vcpkg release builds, macOS compilation/signing/runtime behavior, and
-  GitHub publication still await the first CI run. macOS archives are ad-hoc
-  signed, not Developer ID notarized.
+- The first CI runs built all pinned vcpkg dependencies on Linux x64 and macOS
+  ARM64. Native engine compilation, signing, archive tests, and publication are
+  separate required stages; their results are recorded in the
+  [release workflow](https://github.com/elfstead/bug/actions/workflows/release.yml).
+  macOS archives are ad-hoc signed, not Developer ID notarized.
 - Snapshot identities use the first 12 characters of the source commit;
   archive metadata retains the full commit. Four release identity tests cover
   branch/local snapshots, alpha prereleases, explicit stable tags, and rejection
