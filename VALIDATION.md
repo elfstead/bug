@@ -108,6 +108,11 @@ Ladybird revision: `7786ab9c13f000a7f9fcd75248ee10d691a29195`.
   of invalid tag names. Workflow/shell/Python checks pass. Both Rust feature
   configurations pass unit tests and Clippy after adding `bug --version` and
   the public build identity constants.
+- The first Linux release build completed all pinned vcpkg dependencies, then
+  exposed an upstream CMake job-pool overwrite before native compilation. The
+  frontend patch now appends the Cargo pool while preserving the linker pool.
+  A real local engine build with CI's `LAGOM_LINK_POOL_SIZE=1` passed, and Ninja's
+  generated rules contain both pools.
 
 ## Limits
 

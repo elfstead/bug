@@ -47,9 +47,15 @@ index db582e3c..9d4b52fa 100644
      if (NOT APPLE)
          list(APPEND LADYBIRD_QT_COMPONENTS Positioning)
 diff --git a/Meta/CMake/rust_crate.cmake b/Meta/CMake/rust_crate.cmake
-index 3b3e6214..110de539 100644
+index 3b3e6214..4385e547 100644
 --- a/Meta/CMake/rust_crate.cmake
 +++ b/Meta/CMake/rust_crate.cmake
+@@ -1,4 +1,4 @@
+-set_property(GLOBAL PROPERTY JOB_POOLS "${JOB_POOLS};cargo=1")
++set_property(GLOBAL APPEND PROPERTY JOB_POOLS cargo=1)
+ 
+ # Detect the Rust toolchain.
+ find_program(RUST_CARGO cargo REQUIRED)
 @@ -22,7 +22,7 @@ if (NOT DEFINED CACHE{RUST_TARGET_TRIPLE})
  endif()
  
