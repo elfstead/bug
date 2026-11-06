@@ -6,6 +6,7 @@ One page per ordinary window, or an offscreen view with no display server. Your
 tiling window manager owns layout and switching; your Rust code or scripts own
 navigation and interaction. No tabs, address bar, toolbar, or Qt. Ctrl+Shift+P
 opens a transient command palette in the windowed client.
+macOS also accepts Command+Shift+P and Command+C/X/V for text clipboard actions.
 
 ## Architecture
 
@@ -174,7 +175,7 @@ bug = { path = "/home/elf/dev/bug", default-features = false }
 
 ## Command palette
 
-Press **Ctrl+Shift+P**, type to filter, then press Enter. Up/Down selects a result;
+Press **Ctrl+Shift+P** (or **Command+Shift+P** on macOS), type to filter, then press Enter. Up/Down selects a result;
 Esc goes back or closes the palette, and Ctrl+U clears its input. Commands cover
 navigation, new window, history, reload, stop, close, zoom, and quit. Navigate and
 New window prompt for a URL. Results can also be clicked.
@@ -185,6 +186,7 @@ by the client. The rest of the time, keys go to the page. This initial palette
 uses a bitmap font; unsupported display glyphs appear as `?`, while the entered
 text is retained. Ctrl+V pastes into the palette; Ctrl+C/X copies/cuts its whole
 input. IME composition is still pending.
+On macOS, Command+V and Command+C/X perform the same palette operations.
 
 ## JavaScript results
 
@@ -247,10 +249,14 @@ target/debug/bug --headless --session /tmp/bug-session.json
 
 ## Text clipboard
 
-Ctrl+C, Ctrl+X, and Ctrl+V copy, cut, and paste page text using the OS clipboard;
-Shift+Insert also pastes. X11 uses [arboard](https://docs.rs/arboard/latest/arboard/struct.Clipboard.html), and native Wayland uses
-[smithay-clipboard](https://docs.rs/smithay-clipboard/latest/smithay_clipboard/struct.Clipboard.html) on the client's display connection. Clipboard ownership lasts
-while the client is alive unless your desktop clipboard manager retains it.
+Ctrl+C, Ctrl+X, and Ctrl+V copy, cut, and paste page text using the OS clipboard.
+macOS additionally supports its usual **Command+C/X/V** shortcuts. Shift+Insert
+also pastes. X11 and macOS use [arboard](https://docs.rs/arboard/latest/arboard/struct.Clipboard.html);
+its macOS backend reads and writes Apple's `NSPasteboard`. Native Wayland uses
+[smithay-clipboard](https://docs.rs/smithay-clipboard/latest/smithay_clipboard/struct.Clipboard.html)
+on the client's display connection. On X11/Wayland, clipboard ownership lasts
+while the client is alive unless a clipboard manager retains it; macOS retains
+the copied text in the system pasteboard after the writer closes.
 
 The core API remains display-independent: `copy(view)` and `cut(view)` emit
 `ClipboardChanged { text }`, `paste(view, text)` supplies text explicitly, and
@@ -310,6 +316,9 @@ output through the shared Rust library API.
 This is an initial prototype. GPU presentation, IME composition,
 accessibility, file/select/color pickers, controller-driven permission
 and dialog replies, and complete download integration remain to be implemented.
+macOS has a clipboard implementation, but full window/input/HiDPI parity has
+not yet been verified on a Mac. CI tests the native clipboard against `pbcopy`
+and `pbpaste`; that does not replace testing Command shortcuts in a live window.
 Alerts emit an event and close; confirms/prompts and permission requests are
 dismissed. Before-unload requests are currently accepted. These defaults are
 explicit prototype behavior, not a finished policy system.

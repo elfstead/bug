@@ -231,9 +231,11 @@ impl<C: Controller> App<C> {
         if !pressed && page.suppressed_keys.remove(&event.physical_key) {
             return Ok(());
         }
-        let shortcut = page.modifiers.control_key()
-            && page.modifiers.shift_key()
-            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("p"));
+        let shortcut = super::shortcuts::palette(
+            &event.logical_key,
+            page.modifiers,
+            cfg!(target_os = "macos"),
+        );
         if pressed && shortcut {
             page.suppressed_keys.insert(event.physical_key);
             if event.repeat {
@@ -254,23 +256,12 @@ impl<C: Controller> App<C> {
             }
             return Ok(());
         }
-        let clipboard_key = if pressed
-            && page.modifiers.control_key()
-            && !page.modifiers.shift_key()
-            && !page.modifiers.alt_key()
-            && !page.modifiers.super_key()
-        {
-            match &event.logical_key {
-                Key::Character(s) if ["c", "x", "v"].iter().any(|k| s.eq_ignore_ascii_case(k)) => {
-                    Some(s.to_lowercase())
-                }
-                _ => None,
-            }
-        } else if pressed
-            && page.modifiers.shift_key()
-            && event.logical_key == Key::Named(NamedKey::Insert)
-        {
-            Some("v".into())
+        let clipboard_key = if pressed {
+            super::shortcuts::clipboard(
+                &event.logical_key,
+                page.modifiers,
+                cfg!(target_os = "macos"),
+            )
         } else {
             None
         };

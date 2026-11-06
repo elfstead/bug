@@ -9,6 +9,14 @@ pub(super) enum Clipboard {
     },
 }
 impl Clipboard {
+    // arboard uses NSPasteboard on macOS and X11 on Linux. Only Wayland needs
+    // the compositor connection owned by the windowing client.
+    fn native() -> Result<Self, String> {
+        arboard::Clipboard::new()
+            .map(Self::Native)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn new(display_owner: OwnedDisplayHandle) -> Result<Self, String> {
         let display = display_owner
             .display_handle()
@@ -25,9 +33,7 @@ impl Clipboard {
             });
         }
         let _ = display;
-        arboard::Clipboard::new()
-            .map(Self::Native)
-            .map_err(|e| e.to_string())
+        Self::native()
     }
     pub fn read(&mut self) -> Result<String, String> {
         match self {
@@ -45,5 +51,45 @@ impl Clipboard {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::Clipboard;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    // Run explicitly on an ephemeral CI runner: this overwrites its clipboard.
+    #[test]
+    #[ignore = "requires the macOS pasteboard service and overwrites the system clipboard"]
+    fn macos_system_clipboard_interoperates_with_pbcopy_and_pbpaste() {
+        let mut clipboard = Clipboard::native().expect("NSPasteboard is available");
+        let from_system = "macOS → Bug: 日本語 🐛\nsecond line";
+        let mut writer = Command::new("/usr/bin/pbcopy")
+            .env("LC_ALL", "en_US.UTF-8")
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(from_system.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success());
+        assert_eq!(clipboard.read().unwrap(), from_system);
+
+        let from_bug = "Bug → macOS: café 🐛\nsecond line";
+        clipboard.write(from_bug).unwrap();
+        drop(clipboard); // macOS retains the pasteboard contents after the writer is dropped.
+        let reader = Command::new("/usr/bin/pbpaste")
+            .env("LC_ALL", "en_US.UTF-8")
+            .output()
+            .unwrap();
+        assert!(reader.status.success());
+        assert_eq!(String::from_utf8(reader.stdout).unwrap(), from_bug);
     }
 }

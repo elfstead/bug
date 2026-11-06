@@ -71,6 +71,9 @@ jobs:
         run: |
           mkdir -p build/vcpkg-cache
           echo "VCPKG_BINARY_SOURCES=clear;files,$PWD/build/vcpkg-cache,readwrite" >> "$GITHUB_ENV"
+      - name: Check macOS system clipboard
+        if: runner.os == 'macOS'
+        run: cargo test --locked --lib clients::clipboard::tests::macos_system_clipboard_interoperates_with_pbcopy_and_pbpaste -- --ignored --exact
       - name: Build Rust host and Qt-free Ladybird engine
         run: scripts/ci/build-release
       - name: Check Rust API and clients

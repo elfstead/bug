@@ -8,6 +8,8 @@ pub mod headless;
 #[cfg(feature = "windowed")]
 mod palette;
 #[cfg(feature = "windowed")]
+mod shortcuts;
+#[cfg(feature = "windowed")]
 pub mod windowed;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
