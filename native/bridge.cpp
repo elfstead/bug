@@ -256,7 +256,7 @@ View* lookup(uint64_t id)
 }
 
 extern "C" {
-uint32_t bug_abi_version() { return 3; }
+uint32_t bug_abi_version() { return BUG_ABI_VERSION; }
 
 int bug_init(char const* binary, char const* profile, BugEvent handler, void* user)
 {

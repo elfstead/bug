@@ -27,6 +27,10 @@ jobs:
           persist-credentials: false
       - id: version
         run: python3 scripts/ci/version.py
+      - name: Check generated bridge bindings
+        run: |
+          python3 scripts/generate-abi --check
+          python3 tests/generate-abi.py
       - name: Check snapshot and milestone classification
         run: python3 tests/release-version.py
 

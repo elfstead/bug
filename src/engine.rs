@@ -1,8 +1,11 @@
 //! Single-threaded owner of the native bridge. No native pointer escapes this module.
+#[rustfmt::skip]
+pub(crate) mod abi;
+
 use libloading::Library;
 use std::{
     collections::VecDeque,
-    ffi::{CString, c_char, c_void},
+    ffi::{CStr, CString, c_char, c_void},
     marker::PhantomData,
     mem::ManuallyDrop,
     path::Path,
@@ -19,19 +22,6 @@ pub struct NativeEvent {
     pub view: u64,
     pub text: String,
 }
-type Callback = unsafe extern "C" fn(*mut c_void, u32, u64, *const c_char, usize);
-type Init = unsafe extern "C" fn(*const c_char, *const c_char, Callback, *mut c_void) -> i32;
-type Void = unsafe extern "C" fn();
-type Open = unsafe extern "C" fn(*const c_char) -> u64;
-type Navigate = unsafe extern "C" fn(u64, *const c_char) -> i32;
-type Evaluate = unsafe extern "C" fn(u64, u64, *const c_char) -> i32;
-type Action = unsafe extern "C" fn(u64, u32, *const c_char, f64) -> i32;
-type ReplyFilePicker = unsafe extern "C" fn(u64, u64, *const *const c_char, usize) -> i32;
-type Resize = unsafe extern "C" fn(u64, u32, u32, f64) -> i32;
-type Frame = unsafe extern "C" fn(u64, *mut u32, usize, *mut u32, *mut u32) -> usize;
-type Mouse = unsafe extern "C" fn(u64, u32, i32, i32, u32, u32, u32, f64, f64, u32) -> i32;
-type Key = unsafe extern "C" fn(u64, i32, *const c_char, u32, u32, i32) -> i32;
-
 pub struct Engine {
     // Ladybird owns process-wide state and event-loop TLS. Keep its code mapped
     // until process exit, including after native shutdown and failed startup.
@@ -40,17 +30,7 @@ pub struct Engine {
     // keeps that object stable when Engine is moved into the event-loop state.
     #[allow(clippy::box_collection)]
     events: Box<VecDeque<NativeEvent>>,
-    shutdown: Void,
-    pump: Void,
-    open: Open,
-    navigate: Navigate,
-    evaluate: Evaluate,
-    action: Action,
-    resize: Resize,
-    reply_file_picker: ReplyFilePicker,
-    frame: Frame,
-    mouse: Mouse,
-    key: Key,
+    symbols: abi::Symbols,
     _main_thread: PhantomData<Rc<()>>,
 }
 
@@ -91,44 +71,18 @@ impl Engine {
                 Library::new(library)
                     .map_err(|e| format!("loading engine: {}", library_error(e)))?,
             );
-            let version = library
-                .get::<unsafe extern "C" fn() -> u32>(b"bug_abi_version\0")
-                .map_err(library_error)?;
-            if version() != 3 {
-                return Err(
-                    "unsupported Bug engine ABI (expected 3); rebuild with scripts/build-engine"
-                        .into(),
-                );
-            }
-            macro_rules! symbol {
-                ($name:literal, $ty:ty) => {
-                    *library
-                        .get::<$ty>(concat!($name, "\0").as_bytes())
-                        .map_err(library_error)?
-                };
-            }
-            let init = symbol!("bug_init", Init);
+            let symbols = abi::Symbols::load(&library)?;
             if INITIALIZED.swap(true, Ordering::SeqCst) {
                 return Err("Ladybird may only be initialized once per process".into());
             }
             let mut engine = Self {
                 events: Box::default(),
-                shutdown: symbol!("bug_shutdown", Void),
-                pump: symbol!("bug_pump", Void),
-                open: symbol!("bug_open", Open),
-                navigate: symbol!("bug_navigate", Navigate),
-                evaluate: symbol!("bug_evaluate", Evaluate),
-                action: symbol!("bug_action", Action),
-                reply_file_picker: symbol!("bug_reply_file_picker", ReplyFilePicker),
-                resize: symbol!("bug_resize", Resize),
-                frame: symbol!("bug_frame", Frame),
-                mouse: symbol!("bug_mouse", Mouse),
-                key: symbol!("bug_key", Key),
+                symbols,
                 _library: library,
                 _main_thread: PhantomData,
             };
             let user = (&mut *engine.events as *mut VecDeque<NativeEvent>).cast();
-            if init(executable.as_ptr(), profile.as_ptr(), receive, user) == 0 {
+            if (engine.symbols.init)(executable.as_ptr(), profile.as_ptr(), receive, user) == 0 {
                 return Err(engine
                     .events
                     .iter()
@@ -140,14 +94,14 @@ impl Engine {
         }
     }
     pub fn poll(&mut self) {
-        unsafe { (self.pump)() };
+        unsafe { (self.symbols.pump)() };
     }
     pub fn events(&mut self) -> VecDeque<NativeEvent> {
         std::mem::take(&mut *self.events)
     }
     pub fn open(&mut self, url: &str) -> Result<u64, String> {
         let url = cstring(url)?;
-        let id = unsafe { (self.open)(url.as_ptr()) };
+        let id = unsafe { (self.symbols.open)(url.as_ptr()) };
         if id == 0 {
             Err("could not create view".into())
         } else {
@@ -156,19 +110,19 @@ impl Engine {
     }
     pub fn navigate(&mut self, id: u64, url: &str) -> Result<(), String> {
         let url = cstring(url)?;
-        success(unsafe { (self.navigate)(id, url.as_ptr()) }, id)
+        success(unsafe { (self.symbols.navigate)(id, url.as_ptr()) }, id)
     }
     pub fn evaluate(&mut self, view: u64, request: u64, body: &str) -> Result<(), String> {
         let body = cstring(body)?;
         success(
-            unsafe { (self.evaluate)(view, request, body.as_ptr()) },
+            unsafe { (self.symbols.evaluate)(view, request, body.as_ptr()) },
             view,
         )
     }
     pub fn action(&mut self, id: u64, action: u32, text: &str, number: f64) -> Result<(), String> {
         let text = cstring(text)?;
         success(
-            unsafe { (self.action)(id, action, text.as_ptr(), number) },
+            unsafe { (self.symbols.action)(id, action, text.as_ptr(), number) },
             id,
         )
     }
@@ -185,8 +139,9 @@ impl Engine {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let pointers: Vec<_> = names.iter().map(|name| name.as_ptr()).collect();
-        match unsafe { (self.reply_file_picker)(view, request, pointers.as_ptr(), pointers.len()) }
-        {
+        match unsafe {
+            (self.symbols.reply_file_picker)(view, request, pointers.as_ptr(), pointers.len())
+        } {
             1 => Ok(true),
             0 => Ok(false),
             -1 => Err("this picker accepts only one file".into()),
@@ -194,11 +149,15 @@ impl Engine {
         }
     }
     pub fn resize(&mut self, id: u64, width: u32, height: u32, scale: f64) -> Result<(), String> {
-        success(unsafe { (self.resize)(id, width, height, scale) }, id)
+        success(
+            unsafe { (self.symbols.resize)(id, width, height, scale) },
+            id,
+        )
     }
     pub fn frame(&mut self, id: u64, pixels: &mut Vec<u32>) -> Result<(u32, u32), String> {
         let (mut width, mut height) = (0, 0);
-        let count = unsafe { (self.frame)(id, std::ptr::null_mut(), 0, &mut width, &mut height) };
+        let count =
+            unsafe { (self.symbols.frame)(id, std::ptr::null_mut(), 0, &mut width, &mut height) };
         if count == 0 {
             return Ok((0, 0));
         }
@@ -207,7 +166,7 @@ impl Engine {
         }
         pixels.resize(count, 0);
         let copied = unsafe {
-            (self.frame)(
+            (self.symbols.frame)(
                 id,
                 pixels.as_mut_ptr(),
                 pixels.len(),
@@ -222,7 +181,7 @@ impl Engine {
     }
     pub fn mouse(&mut self, id: u64, input: MouseInput) {
         unsafe {
-            (self.mouse)(
+            (self.symbols.mouse)(
                 id,
                 input.kind,
                 input.x,
@@ -247,7 +206,7 @@ impl Engine {
     ) {
         if let Ok(name) = cstring(name) {
             unsafe {
-                (self.key)(
+                (self.symbols.key)(
                     id,
                     pressed.into(),
                     name.as_ptr(),
@@ -262,7 +221,7 @@ impl Engine {
 
 impl Drop for Engine {
     fn drop(&mut self) {
-        unsafe { (self.shutdown)() };
+        unsafe { (self.symbols.shutdown)() };
     }
 }
 #[derive(Default)]
@@ -280,6 +239,14 @@ pub struct MouseInput {
 fn cstring(text: &str) -> Result<CString, String> {
     CString::new(text).map_err(|_| "text contains a NUL byte".into())
 }
+/// The caller must use the function pointer type declared for this ABI symbol
+/// and keep the trusted library mapped for as long as the pointer is used.
+unsafe fn load_symbol<T: Copy>(library: &Library, name: &CStr) -> Result<T, String> {
+    unsafe { library.get::<T>(name.to_bytes_with_nul()) }
+        .map(|symbol| *symbol)
+        .map_err(library_error)
+}
+
 fn library_error(error: libloading::Error) -> String {
     match std::error::Error::source(&error) {
         Some(source) => format!("{error}: {source}"),
@@ -314,11 +281,17 @@ mod tests {
         let user = (&mut queue as *mut VecDeque<NativeEvent>).cast();
         let mut text = b"hello".to_vec();
         unsafe {
-            receive(user, 3, 9, text.as_ptr().cast(), text.len());
+            receive(
+                user,
+                abi::events::TITLE,
+                9,
+                text.as_ptr().cast(),
+                text.len(),
+            );
         }
         text.fill(b'x');
         unsafe {
-            receive(user, 6, 9, std::ptr::null(), 0);
+            receive(user, abi::events::FRAME, 9, std::ptr::null(), 0);
         }
         assert_eq!(queue[0].text, "hello");
         assert_eq!(queue[1].text, "");

@@ -32,6 +32,19 @@ The adapter targets the exact upstream commit in `ladybird-revision`. Ladybird's
 frontend interfaces can change, so updates are explicit. Its standard browser UI
 is neither constructed nor needed by Bug.
 
+### Changing the native interface
+
+Edit `native/abi.toml` to add an exported function, callback signature, event ID,
+or action ID. Run `scripts/generate-abi` with Python 3.11+ and commit both
+outputs. C++ includes `native/bug.h` and Rust loads the symbols declared in
+`src/engine/abi.rs`. The checked-in files let either side build independently.
+CI runs `scripts/generate-abi --check` before the platform builds.
+
+Keep existing numeric IDs stable. Bump the ABI version when either side
+requires a different contract, including a new required symbol. Implement the
+Ladybird callback behavior in `native/bridge.cpp` and expose it to clients
+through the Rust API.
+
 ## Build and run
 
 Linux supports native Wayland and X11 windows. Release CI also targets Apple
@@ -237,7 +250,9 @@ titles and runtime IDs. `find` replies with `found` and a view ID (or null).
 `Browser::snapshot()` returns a versioned, serde-serializable `SessionSnapshot`.
 It stores each view's URL, viewport, zoom, metadata, and load script. It does not
 serialize a live DOM/JS heap, navigation history, clipboard, or WM layout.
-Cookies and other profile data remain in the selected Ladybird profile.
+Persistent cookies and localStorage survive a clean restart with the same profile.
+The pinned Ladybird engine keeps IndexedDB records in memory. Sites that use
+IndexedDB for login state can require a fresh sign-in after a restart.
 
 `Browser::restore(&snapshot)` validates the snapshot and name uniqueness before
 opening views, then returns their new runtime IDs in snapshot order. It appends

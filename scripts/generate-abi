@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Generate the C header and Rust dynamic bindings for Bug's in-process ABI."""
+import argparse
+from pathlib import Path
+import re
+import sys
+import textwrap
+import tomllib
+
+ROOT = Path(__file__).resolve().parents[1]
+BANNER = "// Generated from native/abi.toml by scripts/generate-abi. Edit the definition instead."
+RUST_TYPES = {
+    "void": "()", "int": "c_int", "int32_t": "i32", "uint32_t": "u32",
+    "uint64_t": "u64", "double": "f64", "size_t": "usize", "void*": "*mut c_void",
+    "const char*": "*const c_char", "const char* const*": "*const *const c_char",
+    "uint32_t*": "*mut u32",
+}
+
+
+def signatures(entries, types):
+    """Yield the C and Rust declarations for each named signature."""
+    for name, signature in entries.items():
+        match = re.fullmatch(r"([^()]+)\(([^()]*)\)", signature)
+        if not match:
+            raise ValueError(f"{name}: invalid signature {signature!r}")
+        result, params = match.groups()
+        args = [arg.strip() for arg in params.split(",")] if params else []
+        arg_types = []
+        for arg in args:
+            part = re.fullmatch(r"(.+?)\s+([A-Za-z_]\w*)", arg)
+            if not part or part[1] == "void":
+                raise ValueError(f"{name}: expected a typed, named parameter, got {arg!r}")
+            arg_types.append(part[1])
+        try:
+            rust_args = [types[arg_type] for arg_type in arg_types]
+            rust_result = types[result]
+        except KeyError as error:
+            raise ValueError(f"{name}: unknown ABI type {error.args[0]!r}") from error
+        suffix = "" if result == "void" else f" -> {rust_result}"
+        rust = f'unsafe extern "C" fn({", ".join(rust_args)}){suffix}'
+        yield name, result, params or "void", rust
+
+
+def generate(spec):
+    version = spec["version"]
+    c = [BANNER, "#pragma once", "#include <stddef.h>", "#include <stdint.h>", "",
+         "#ifdef __cplusplus", 'extern "C" {', "#endif", "",
+         f"#define BUG_ABI_VERSION {version}", ""]
+    rs = [BANNER, "use std::ffi::{c_char, c_int, c_void};", "",
+          f"pub(super) const ABI_VERSION: u32 = {version};", ""]
+    docs = spec.get("docs", {})
+    types = RUST_TYPES.copy()
+    for name, result, params, rust in signatures(spec["callbacks"], types):
+        c.extend(textwrap.wrap(docs.get(name, ""), 96, initial_indent="// ", subsequent_indent="// "))
+        c.extend([f"typedef {result} (*{name})({params});", ""])
+        rs.extend([f"pub(super) type {name} = {rust};", ""])
+        types[name] = name
+
+    for group in ("events", "actions"):
+        ids = spec[group]
+        if len(set(ids.values())) != len(ids):
+            raise ValueError(f"duplicate ID in {group}")
+        c.append("enum {")
+        rs.append(f"pub(crate) mod {group} {{")
+        for name, value in ids.items():
+            c.append(f"    BUG_{name} = {value},")
+            rs.append(f"    pub(crate) const {name}: u32 = {value};")
+        c.extend(["};", ""])
+        rs.extend(["}", ""])
+
+    # The version query has a permanent symbol and signature. Check it before
+    # resolving any version-specific symbol (including newly added functions).
+    c.append("uint32_t bug_abi_version(void);")
+    functions = list(signatures(spec["functions"], types))
+    if "abi_version" in spec["functions"]:
+        raise ValueError("abi_version is reserved for the version query")
+    rs.append("pub(super) struct Symbols {")
+    for name, result, params, rust in functions:
+        c.extend(textwrap.wrap(docs.get(name, ""), 96, initial_indent="// ", subsequent_indent="// "))
+        c.append(f"{result} bug_{name}({params});")
+        rs.append(f"    pub(super) {name}: {rust},")
+    c.extend(["", "#ifdef __cplusplus", "}", "#endif"])
+    rs.append('''}
+
+impl Symbols {
+    pub(super) unsafe fn load(library: &libloading::Library) -> Result<Self, String> {
+        let version: unsafe extern "C" fn() -> u32 =
+            unsafe { super::load_symbol(library, c"bug_abi_version")? };
+        let found = unsafe { version() };
+        if found != ABI_VERSION {
+            return Err(format!(
+                "unsupported Bug engine ABI {found} (expected {ABI_VERSION}); rebuild with scripts/build-engine"
+            ));
+        }
+        unsafe {
+            Ok(Self {''')
+    for name, *_ in functions:
+        rs.append(f'                {name}: super::load_symbol(library, c"bug_{name}")?,')
+    rs.extend(["            })", "        }", "    }", "}"])
+    return {"native/bug.h": "\n".join(c) + "\n", "src/engine/abi.rs": "\n".join(rs) + "\n"}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true", help="report stale or missing outputs without writing")
+    args = parser.parse_args()
+    try:
+        spec = tomllib.loads((ROOT / "native/abi.toml").read_text())
+        outputs = generate(spec)
+    except (KeyError, ValueError) as error:
+        parser.exit(1, f"native/abi.toml: {error}\n")
+    stale = []
+    for name, content in outputs.items():
+        path = ROOT / name
+        if path.is_file() and path.read_bytes() == content.encode():
+            continue
+        if args.check:
+            stale.append(name)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content.encode())
+    if stale:
+        sys.exit(f"Stale ABI bindings: {', '.join(stale)}. Run scripts/generate-abi.")
+
+
+if __name__ == "__main__":
+    main()

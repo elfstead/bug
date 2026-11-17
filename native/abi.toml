@@ -1,0 +1,54 @@
+# Stable numeric IDs. Append new IDs and bump the version for incompatible changes.
+version = 3
+
+[events]
+OPENED = 1
+CLOSED = 2
+TITLE = 3
+URL = 4
+LOADED = 5
+FRAME = 6
+HOOK = 7
+ERROR = 8
+EVALUATED = 9
+CLIPBOARD = 10
+FILE_PICKER = 11
+
+[actions]
+BACK = 1
+FORWARD = 2
+RELOAD = 3
+STOP = 4
+CLOSE = 5
+EVAL = 6
+ZOOM = 7
+FOCUS = 8
+BLUR = 9
+COPY = 10
+CUT = 11
+PASTE = 12
+
+[callbacks]
+BugEvent = "void(void* user, uint32_t kind, uint64_t view, const char* text, size_t length)"
+
+# Every symbol uses the bug_ prefix. bug_abi_version(void) is the fixed bootstrap.
+[functions]
+init = "int(const char* executable_path, const char* profile_path, BugEvent callback, void* user)"
+shutdown = "void()"
+pump = "void()"
+open = "uint64_t(const char* url)"
+navigate = "int(uint64_t view, const char* url)"
+evaluate = "int(uint64_t view, uint64_t request, const char* function_body)"
+reply_file_picker = "int(uint64_t view, uint64_t request, const char* const* paths, size_t count)"
+action = "int(uint64_t view, uint32_t action, const char* text, double number)"
+resize = "int(uint64_t view, uint32_t width, uint32_t height, double scale)"
+frame = "size_t(uint64_t view, uint32_t* pixels, size_t capacity, uint32_t* width, uint32_t* height)"
+mouse = "int(uint64_t view, uint32_t kind, int32_t x, int32_t y, uint32_t button, uint32_t buttons, uint32_t modifiers, double dx, double dy, uint32_t clicks)"
+key = "int(uint64_t view, int pressed, const char* key, uint32_t codepoint, uint32_t modifiers, int repeat)"
+
+[docs]
+BugEvent = "All calls belong to the initializing thread. Copy borrowed text before returning from the callback. Reentry into Bug from the callback is unsupported."
+reply_file_picker = "Returns 1 on success, 0 for a stale request, -1 for too many files, or -2 for an unreadable file."
+frame = "Returns the pixel count, or zero without a CPU frame. With insufficient capacity, writes only the dimensions. Pixels are packed as 0x00RRGGBB."
+mouse = "Mouse kinds are move=0, down=1, up=2, wheel=3, leave=4. DOM button masks are left=1, right=2, middle=4, back=8, forward=16."
+key = "Modifier bits are alt=1, ctrl=2, shift=4, super=8. Key names use Ladybird symbolic names. Unknown names map to Invalid."

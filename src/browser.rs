@@ -1,3 +1,4 @@
+use crate::engine::abi::{actions, events};
 use crate::engine::{Engine, MouseInput};
 use crate::evaluation::{Evaluation, NativeEvaluation};
 use crate::{EvaluationId, EvaluationResult, SavedView, SessionSnapshot, ViewMetadata};
@@ -304,20 +305,20 @@ impl Browser {
         self.engine.navigate(view, url)
     }
     pub fn back(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 1, "", 0.)
+        self.engine.action(view, actions::BACK, "", 0.)
     }
     pub fn forward(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 2, "", 0.)
+        self.engine.action(view, actions::FORWARD, "", 0.)
     }
     pub fn reload(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 3, "", 0.)
+        self.engine.action(view, actions::RELOAD, "", 0.)
     }
     pub fn stop(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 4, "", 0.)
+        self.engine.action(view, actions::STOP, "", 0.)
     }
     /// Closure is asynchronous. Keep client resources until the Closed event.
     pub fn close(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 5, "", 0.)?;
+        self.engine.action(view, actions::CLOSE, "", 0.)?;
         self.cancel_evaluations(view, "view is closing");
         Ok(())
     }
@@ -355,14 +356,14 @@ impl Browser {
         Ok(request)
     }
     pub fn copy(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 10, "", 0.)
+        self.engine.action(view, actions::COPY, "", 0.)
     }
     pub fn cut(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, 11, "", 0.)
+        self.engine.action(view, actions::CUT, "", 0.)
     }
     /// Explicitly paste supplied text. Clients obtain it from their clipboard.
     pub fn paste(&mut self, view: ViewId, text: &str) -> Result<(), String> {
-        self.engine.action(view, 12, text, 0.)?;
+        self.engine.action(view, actions::PASTE, text, 0.)?;
         self.clipboard = text.into();
         Ok(())
     }
@@ -479,7 +480,7 @@ impl Browser {
         }
     }
     pub fn set_zoom(&mut self, view: ViewId, factor: f64) -> Result<(), String> {
-        self.engine.action(view, 7, "", factor)?;
+        self.engine.action(view, actions::ZOOM, "", factor)?;
         self.views.get_mut(&view).ok_or("missing view")?.info.zoom = factor;
         Ok(())
     }
@@ -501,8 +502,16 @@ impl Browser {
     }
     /// Report actual focus from the client to the renderer.
     pub fn set_focused(&mut self, view: ViewId, focused: bool) -> Result<(), String> {
-        self.engine
-            .action(view, if focused { 8 } else { 9 }, "", 0.)?;
+        self.engine.action(
+            view,
+            if focused {
+                actions::FOCUS
+            } else {
+                actions::BLUR
+            },
+            "",
+            0.,
+        )?;
         if focused {
             self.events.push_back(BrowserEvent::Focused { view });
         }
@@ -577,7 +586,7 @@ impl Browser {
         for event in self.engine.events() {
             let view = event.view;
             let event = match event.kind {
-                1 => {
+                events::OPENED => {
                     self.views.insert(
                         view,
                         ViewState {
@@ -604,12 +613,12 @@ impl Browser {
                     }
                     BrowserEvent::Opened { view }
                 }
-                2 => {
+                events::CLOSED => {
                     self.cancel_evaluations(view, "view closed");
                     self.views.remove(&view);
                     BrowserEvent::Closed { view }
                 }
-                3 => {
+                events::TITLE => {
                     if let Some(state) = self.views.get_mut(&view) {
                         state.info.title.clone_from(&event.text);
                     }
@@ -618,7 +627,7 @@ impl Browser {
                         title: event.text,
                     }
                 }
-                4 => {
+                events::URL => {
                     if let Some(state) = self.views.get_mut(&view) {
                         state.info.url.clone_from(&event.text);
                     }
@@ -627,10 +636,12 @@ impl Browser {
                         url: event.text,
                     }
                 }
-                5 => {
+                events::LOADED => {
                     if let Some(state) = self.views.get(&view)
                         && !state.load_script.is_empty()
-                        && let Err(message) = self.engine.action(view, 6, &state.load_script, 0.)
+                        && let Err(message) =
+                            self.engine
+                                .action(view, actions::EVAL, &state.load_script, 0.)
                     {
                         self.events.push_back(BrowserEvent::Error { message });
                     }
@@ -639,19 +650,19 @@ impl Browser {
                         url: event.text,
                     }
                 }
-                6 => BrowserEvent::FrameReady { view },
-                7 => BrowserEvent::Hook {
+                events::FRAME => BrowserEvent::FrameReady { view },
+                events::HOOK => BrowserEvent::Hook {
                     view,
                     kind: "native".into(),
                     data: event.text,
                 },
-                8 => {
+                events::ERROR => {
                     self.cancel_evaluations(view, "renderer failed");
                     BrowserEvent::Error {
                         message: event.text,
                     }
                 }
-                9 => match serde_json::from_str::<NativeEvaluation>(&event.text) {
+                events::EVALUATED => match serde_json::from_str::<NativeEvaluation>(&event.text) {
                     Ok(reply) => {
                         if self
                             .evaluations
@@ -675,11 +686,11 @@ impl Browser {
                         }
                     }
                 },
-                10 => {
+                events::CLIPBOARD => {
                     self.clipboard.clone_from(&event.text);
                     BrowserEvent::ClipboardChanged { text: event.text }
                 }
-                11 => match serde_json::from_str(&event.text) {
+                events::FILE_PICKER => match serde_json::from_str(&event.text) {
                     Ok(picker) => BrowserEvent::FilePickerRequested { view, picker },
                     Err(error) => BrowserEvent::Error {
                         message: error.to_string(),
