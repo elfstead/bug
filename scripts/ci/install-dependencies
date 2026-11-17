@@ -28,7 +28,8 @@ esac
 # vcpkg includes CMake's version in every package ABI. Runner image updates must
 # not silently invalidate the dependency cache between retries.
 python3 -m venv build/ci-python
-build/ci-python/bin/pip install cmake==4.5.0
+# Pin the latest release available as wheels on both CI platforms.
+build/ci-python/bin/pip install cmake==4.4.5
 echo "$PWD/build/ci-python/bin" >> "$GITHUB_PATH"
 bug_rust_version=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
 rustup toolchain install "$bug_rust_version" --profile minimal --component rustfmt --component clippy
