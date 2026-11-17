@@ -55,7 +55,9 @@ with ABI version 2. Rebuild the engine after updating an older checkout.
 The Nix shell uses your `<nixpkgs>`; Ladybird and Cargo dependencies are pinned,
 but the Nix package collection currently follows your configured channel. The
 shell reuses the Ladybird package's engine dependencies and explicitly removes
-its Qt inputs. `patches/frontend.patch` selects Bug instead of `UI/Qt`, uses
+its Qt inputs. It uses `curlFull` for WebSocket support. If an older Nix build
+cached plain curl, run `scripts/build-engine -U '*CURL*'` once to refresh it.
+`patches/frontend.patch` selects Bug instead of `UI/Qt`, uses
 thread-local storage compatible with dynamic loading, supports system FFmpeg
 outside vcpkg, and permits newer Rust compiler warnings. Preparation refuses
 to overwrite an unexpected Ladybird revision or incompatible local edits.
