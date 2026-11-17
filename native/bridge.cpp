@@ -11,13 +11,17 @@
 #include <LibGfx/SharedImageBuffer.h>
 #include <LibGfx/SystemTheme.h>
 #include <LibMain/Main.h>
+#include <LibWebCommon/HTML/SelectedFile.h>
 #include <LibWebCommon/HTML/VisibilityState.h>
 #include <LibWebCommon/Page/InputEvent.h>
 #include <LibWebCommon/WebView/Utilities.h>
 #include <LibWebView/Application.h>
 #include <LibWebView/PageBackingStores.h>
 #include <LibWebView/URL.h>
+#include <LibWebView/Utilities.h>
 #include <LibWebView/ViewImplementation.h>
+
+#include <sys/stat.h>
 
 #include <cstring>
 #include <cmath>
@@ -47,11 +51,36 @@ public:
         // Set the initial preference before initialize_tab creates a compositor
         // context. The public setter requires an already initialized page.
         m_presents_from_cpu_memory = true;
+        on_request_file_picker = [this](Web::HTML::FileFilter const& filter, Web::HTML::AllowMultipleFiles multiple) {
+            JsonArray accept;
+            for (auto const& entry : filter.filters) {
+                entry.visit(
+                    [&](Web::HTML::FileFilter::FileType type) {
+                        using Type = Web::HTML::FileFilter::FileType;
+                        switch (type) {
+                        case Type::Audio: accept.must_append("audio/*"sv); break;
+                        case Type::Image: accept.must_append("image/*"sv); break;
+                        case Type::Video: accept.must_append("video/*"sv); break;
+                        }
+                    },
+                    [&](Web::HTML::FileFilter::MimeType const& mime) { accept.must_append(mime.value.to_utf8()); },
+                    [&](Web::HTML::FileFilter::Extension const& ext) { accept.must_append(MUST(String::formatted(".{}", ext.value.to_utf8()))); });
+            }
+            m_picker_request = ++m_picker_sequence;
+            m_picker_multiple = multiple == Web::HTML::AllowMultipleFiles::Yes;
+            JsonObject event;
+            event.set("request"sv, m_picker_request);
+            event.set("multiple"sv, m_picker_multiple);
+            event.set("accept"sv, move(accept));
+            emit(BUG_FILE_PICKER, view_id(), event.serialized());
+        };
+        on_load_start = [this] { cancel_picker(); };
         on_ready_to_paint = [this] { emit(BUG_FRAME, view_id()); };
         on_title_change = [this](auto const& title) { emit(BUG_TITLE, view_id(), title.to_utf8()); };
         on_url_change = [this](auto const& url) { emit(BUG_URL, view_id(), url.serialize()); };
         on_load_finish = [this](auto const& url) { emit(BUG_LOADED, view_id(), url.serialize()); };
         on_close = [this] {
+            m_picker_request = 0;
             auto id = view_id();
             // Destruction must not occur inside a renderer callback on this view.
             Core::EventLoop::current().deferred_invoke([id] {
@@ -67,7 +96,10 @@ public:
             return new_view(traversable, this->is_private()).handle();
         };
         on_link_hover = [this](auto const& url) { emit(BUG_HOOK, view_id(), ByteString::formatted("link {}", url.serialize())); };
-        on_web_content_crashed = [this](auto) { emit(BUG_ERROR, view_id(), "renderer crashed; reload to retry"sv); };
+        on_web_content_crashed = [this](auto) {
+            m_picker_request = 0;
+            emit(BUG_ERROR, view_id(), "renderer crashed; reload to retry"sv);
+        };
 
         // Until a controller supplies dialog replies, settle requests rather than
         // leaving the renderer blocked. Report each unsupported interaction.
@@ -104,6 +136,34 @@ public:
         handle_resize();
     }
 
+    void cancel_picker()
+    {
+        if (m_picker_request != 0)
+            reply_file_picker(m_picker_request, nullptr, 0);
+    }
+
+    int reply_file_picker(u64 request, char const* const* paths, size_t count)
+    {
+        if (!request || request != m_picker_request)
+            return 0;
+        if (!m_picker_multiple && count > 1)
+            return -1;
+        Vector<Web::HTML::SelectedFile> files;
+        for (size_t i = 0; i < count; ++i) {
+            if (!paths || !paths[i])
+                return -2;
+            ByteString path(paths[i]);
+            auto file = WebView::open_local_file_for_renderer(path);
+            struct stat info {};
+            if (file.is_error() || fstat(file.value().fd(), &info) != 0 || !S_ISREG(info.st_mode))
+                return -2;
+            files.empend(Utf16String::from_utf8(LexicalPath::basename(path)), file.release_value());
+        }
+        m_picker_request = 0;
+        file_picker_closed(move(files));
+        return 1;
+    }
+
     size_t copy_frame(uint32_t* dest, size_t capacity, uint32_t& width, uint32_t& height)
     {
         width = height = 0;
@@ -130,6 +190,9 @@ private:
     Gfx::IntPoint to_content_position(Gfx::IntPoint p) const override { return p; }
     Gfx::IntPoint to_widget_position(Gfx::IntPoint p) const override { return p; }
     ViewImplementation* create_view_for_new_tab_or_window(WebView::IsPrivate is_private) override { return &new_view({}, is_private); }
+    u64 m_picker_sequence { 0 };
+    u64 m_picker_request { 0 };
+    bool m_picker_multiple { false };
     Web::DevicePixelSize m_size { 800, 600 };
 };
 
@@ -193,7 +256,7 @@ View* lookup(uint64_t id)
 }
 
 extern "C" {
-uint32_t bug_abi_version() { return 2; }
+uint32_t bug_abi_version() { return 3; }
 
 int bug_init(char const* binary, char const* profile, BugEvent handler, void* user)
 {
@@ -262,8 +325,15 @@ int bug_navigate(uint64_t id, char const* url)
     auto parsed_url = WebView::sanitize_url(StringView(url, strlen(url)), WebView::Application::settings().search_engine_settings().engine);
     if (!parsed_url.has_value())
         return 0;
+    view->cancel_picker();
     view->load(*parsed_url);
     return 1;
+}
+
+int bug_reply_file_picker(uint64_t view, uint64_t request, char const* const* paths, size_t count)
+{
+    auto* target = lookup(view);
+    return target ? target->reply_file_picker(request, paths, count) : 0;
 }
 
 int bug_action(uint64_t id, uint32_t action, char const* text, double number)
@@ -272,11 +342,23 @@ int bug_action(uint64_t id, uint32_t action, char const* text, double number)
     if (!view)
         return 0;
     switch (action) {
-    case BUG_BACK: view->traverse_the_history_by_delta(-1); break;
-    case BUG_FORWARD: view->traverse_the_history_by_delta(1); break;
-    case BUG_RELOAD: view->reload(); break;
+    case BUG_BACK:
+        view->cancel_picker();
+        view->traverse_the_history_by_delta(-1);
+        break;
+    case BUG_FORWARD:
+        view->cancel_picker();
+        view->traverse_the_history_by_delta(1);
+        break;
+    case BUG_RELOAD:
+        view->cancel_picker();
+        view->reload();
+        break;
     case BUG_STOP: view->stop_loading(); break;
-    case BUG_CLOSE: view->request_close(); break;
+    case BUG_CLOSE:
+        view->cancel_picker();
+        view->request_close();
+        break;
     case BUG_EVAL: {
         if (!text) return 0;
         auto script = String::from_utf8(StringView(text, strlen(text)));

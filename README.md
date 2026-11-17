@@ -49,7 +49,7 @@ target/debug/bug https://ladybird.org
 The first engine build is substantial. Subsequent builds are incremental. The
 helper binaries and resources remain in `build/engine`; Bug loads
 `build/engine/lib/libbug_engine.so`. Use `--engine PATH` to select another build
-with ABI version 2. Rebuild the engine after updating an older checkout.
+with ABI version 3. Rebuild the engine after updating an older checkout.
 `--help` works without building the engine.
 
 The Nix shell uses your `<nixpkgs>`; Ladybird and Cargo dependencies are pinned,
@@ -250,6 +250,27 @@ target/debug/bug --session /tmp/bug-session.json
 target/debug/bug --headless --session /tmp/bug-session.json
 ```
 
+## File inputs
+
+A page opening an HTML file input produces a `BrowserEvent::FilePickerRequested`.
+Its request ID, view ID, multiple-selection flag, and HTML `accept` hints are
+available to every client. The windowed client opens a desktop chooser (the
+desktop portal on Linux or AppKit on macOS). It builds desktop filters from extensions, MIME types and media wildcards.
+Headless clients choose how to answer. Only supply local paths selected by
+the user or a trusted controller.
+
+```json
+{"cmd":"click","view":1,"x":20,"y":16}
+{"event":"file_picker_requested","view":1,"request":3,"multiple":false,"accept":[".txt"]}
+{"cmd":"reply_file_picker","view":1,"request":3,"paths":["/home/me/notes.txt"]}
+```
+
+The click uses physical viewport coordinates, including in headless mode.
+In Rust, call `Browser::reply_file_picker(view, request, &paths)`. An empty
+slice cancels. An invalid selection can be retried. Replies to expired or
+already answered requests return `Ok(false)`. The page receives ordinary
+HTML files with basenames and contents.
+
 ## Text clipboard
 
 Ctrl+C, Ctrl+X, and Ctrl+V copy, cut, and paste page text using the OS clipboard.
@@ -317,7 +338,7 @@ load scripts, a command palette, headless views, frame capture, and JSON event
 output through the shared Rust library API.
 
 This is an initial prototype. GPU presentation, IME composition,
-accessibility, file/select/color pickers, controller-driven permission
+accessibility, select/color pickers, controller-driven permission
 and dialog replies, and complete download integration remain to be implemented.
 macOS has a clipboard implementation, but full window/input/HiDPI parity has
 not yet been verified on a Mac. CI tests the native clipboard against `pbcopy`

@@ -25,7 +25,7 @@ lib.bug_pump.restype = None
 lib.bug_shutdown.restype = None
 
 with tempfile.TemporaryDirectory(prefix='bug-render-') as profile:
-    assert lib.bug_abi_version() == 2
+    assert lib.bug_abi_version() == 3
     assert lib.bug_init(str(root / 'build/engine/bin/bug').encode(), profile.encode(), callback, None), events
     try:
         view = lib.bug_open((root / 'examples/smoke.html').as_uri().encode())

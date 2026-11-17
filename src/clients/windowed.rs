@@ -3,12 +3,18 @@ use super::{
     Controller, RunOptions, Session,
     palette::{Palette, Result as PaletteResult},
 };
-use crate::{Browser, BrowserEvent, Frame, KeyInput, MouseInput, ViewId, Viewport};
+use crate::{
+    Browser, BrowserEvent, FilePickerRequest, Frame, KeyInput, MouseInput, ViewId, Viewport,
+};
 use softbuffer::{Context, Surface};
 use std::{
     collections::{HashMap, HashSet},
+    future::Future,
     num::NonZeroU32,
+    path::PathBuf,
+    pin::Pin,
     rc::Rc,
+    task::{Context as TaskContext, Poll, Waker},
     time::{Duration, Instant},
 };
 use winit::{
@@ -19,6 +25,51 @@ use winit::{
     keyboard::{Key, ModifiersState, NamedKey, PhysicalKey},
     window::{Window, WindowId},
 };
+
+struct FilePicker {
+    request: u64,
+    selection: Pin<Box<dyn Future<Output = Vec<PathBuf>>>>,
+}
+
+impl FilePicker {
+    fn open(picker: FilePickerRequest) -> Self {
+        let mut dialog = rfd::AsyncFileDialog::new().set_title("Select files for upload");
+        let mut extensions = Vec::new();
+        for hint in &picker.accept {
+            if let Some(ext) = hint.strip_prefix('.') {
+                if !ext.is_empty() && !ext.contains('\0') {
+                    extensions.push(ext);
+                }
+            } else if let Some((kind, subtype)) = hint.split_once('/')
+                && let Some(known) = mime_guess::get_extensions(kind, subtype)
+            {
+                extensions.extend_from_slice(known);
+            }
+        }
+        extensions.sort_unstable();
+        extensions.dedup();
+        if !extensions.is_empty() {
+            dialog = dialog
+                .add_filter("Accepted extensions", &extensions)
+                .add_filter("All files", &["*"]);
+        }
+        let selection = Box::pin(async move {
+            let files = if picker.multiple {
+                dialog.pick_files().await.unwrap_or_default()
+            } else {
+                dialog.pick_file().await.into_iter().collect()
+            };
+            files
+                .into_iter()
+                .map(|file| file.path().to_owned())
+                .collect()
+        });
+        Self {
+            request: picker.request,
+            selection,
+        }
+    }
+}
 
 struct Page {
     view: ViewId,
@@ -32,6 +83,7 @@ struct Page {
     last_click: Option<(Instant, (i32, i32), u32)>,
     clicks: u32,
     palette: Option<Palette>,
+    file_picker: Option<FilePicker>,
     suppressed_keys: HashSet<PhysicalKey>,
     suppressed_mouse: HashSet<MouseButton>,
 }
@@ -106,6 +158,7 @@ impl<C: Controller> App<C> {
                 last_click: None,
                 clicks: 0,
                 palette: None,
+                file_picker: None,
                 suppressed_keys: HashSet::new(),
                 suppressed_mouse: HashSet::new(),
             },
@@ -115,6 +168,11 @@ impl<C: Controller> App<C> {
     fn handle_events(&mut self, event_loop: &ActiveEventLoop, events: Vec<BrowserEvent>) {
         for event in events {
             match event {
+                BrowserEvent::FilePickerRequested { view, picker } => {
+                    if let Some(page) = self.pages.values_mut().find(|page| page.view == view) {
+                        page.file_picker = Some(FilePicker::open(picker));
+                    }
+                }
                 BrowserEvent::ClipboardChanged { text } => {
                     if let Some(clipboard) = &mut self.clipboard
                         && let Err(message) = clipboard.write(&text)
@@ -496,6 +554,28 @@ impl<C: Controller> ApplicationHandler for App<C> {
     }
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let events = self.session.step();
+        // The event loop already ticks to pump Ladybird; keep other views responsive
+        // while the platform dialog waits for the user.
+        let mut context = TaskContext::from_waker(Waker::noop());
+        for page in self.pages.values_mut() {
+            if let Some(picker) = &mut page.file_picker
+                && let Poll::Ready(paths) = picker.selection.as_mut().poll(&mut context)
+            {
+                let request = picker.request;
+                page.file_picker = None;
+                if let Err(error) = self
+                    .session
+                    .browser
+                    .reply_file_picker(page.view, request, &paths)
+                {
+                    let _ = self
+                        .session
+                        .browser
+                        .reply_file_picker(page.view, request, &[]);
+                    self.session.report_error(error);
+                }
+            }
+        }
         self.handle_events(event_loop, events);
         event_loop.set_control_flow(ControlFlow::WaitUntil(
             Instant::now() + Duration::from_millis(8),

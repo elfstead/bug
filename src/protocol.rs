@@ -10,6 +10,16 @@ use std::io::{BufRead, Read, Write};
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    Click {
+        view: u64,
+        x: i32,
+        y: i32,
+    },
+    ReplyFilePicker {
+        view: u64,
+        request: u64,
+        paths: Vec<std::path::PathBuf>,
+    },
     SetMetadata {
         view: u64,
         metadata: ViewMetadata,
@@ -153,6 +163,16 @@ impl Command {
                     }),
                 ));
             }
+            Self::Click { view, x, y } => browser.click(view, x, y)?,
+            Self::ReplyFilePicker {
+                view,
+                request,
+                paths,
+            } => {
+                if !browser.reply_file_picker(view, request, &paths)? {
+                    return Err("file picker request is no longer pending".into());
+                }
+            }
             Self::Copy { view } => browser.copy(view)?,
             Self::Cut { view } => browser.cut(view)?,
             Self::Paste { view, text } => browser.paste(view, &text)?,
@@ -243,6 +263,11 @@ pub struct ViewInfo {
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
+    FilePickerRequested {
+        view: u64,
+        #[serde(flatten)]
+        picker: crate::FilePickerRequest,
+    },
     EvaluationQueued {
         view: u64,
         request: u64,
@@ -324,6 +349,10 @@ pub enum Event {
 impl Event {
     pub fn from_browser(event: &BrowserEvent) -> Option<Self> {
         Some(match event {
+            BrowserEvent::FilePickerRequested { view, picker } => Self::FilePickerRequested {
+                view: *view,
+                picker: picker.clone(),
+            },
             BrowserEvent::Evaluated {
                 view,
                 request,

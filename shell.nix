@@ -6,7 +6,7 @@ in pkgs.mkShell {
   packages = (with pkgs; [ cargo rustc rustfmt clippy cmake ninja pkg-config python3 git curlFull patch glslang nasm ])
     ++ pkgs.lib.optionals withTests [ pkgs.xvfb-run pkgs.xdotool pkgs.weston pkgs.xclip ];
   buildInputs = engineInputs ++ (with pkgs; [ dbus wayland libxkbcommon libX11 libXcursor libXi libXrandr libxcb ]);
-  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ wayland libxkbcommon libX11 libXcursor libXi libXrandr libxcb vulkan-loader ]);
+  LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [ dbus wayland libxkbcommon libX11 libXcursor libXi libXrandr libxcb vulkan-loader ]);
   shellHook = ''
     export BUG_ICU_ROOT=${pkgs.icu78.dev}
   '';

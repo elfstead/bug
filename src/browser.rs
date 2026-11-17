@@ -97,9 +97,22 @@ pub struct ViewInfo {
     pub metadata: ViewMetadata,
 }
 
+/// An HTML file input's request, valid only for the requesting view and document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FilePickerRequest {
+    pub request: u64,
+    pub multiple: bool,
+    /// HTML accept hints, e.g. ".pdf", "image/*" or "application/pdf".
+    pub accept: Vec<String>,
+}
+
 /// Library events contain no window-system handles or transport framing.
 #[derive(Debug, Clone)]
 pub enum BrowserEvent {
+    FilePickerRequested {
+        view: ViewId,
+        picker: FilePickerRequest,
+    },
     Evaluated {
         view: ViewId,
         request: EvaluationId,
@@ -308,6 +321,16 @@ impl Browser {
         self.cancel_evaluations(view, "view is closing");
         Ok(())
     }
+    /// Supply trusted local files, or an empty slice to cancel. Returns false for
+    /// a stale request. On a file error the request stays open for retry/cancel.
+    pub fn reply_file_picker(
+        &mut self,
+        view: ViewId,
+        request: u64,
+        paths: &[PathBuf],
+    ) -> Result<bool, String> {
+        self.engine.reply_file_picker(view, request, paths)
+    }
     /// Evaluate a script's completion value in the page, awaiting promises.
     /// Results arrive in Evaluated events. Requests are queued per view because
     /// Ladybird's internal script executor has one active execution per page.
@@ -508,6 +531,25 @@ impl Browser {
         }
         Ok(true)
     }
+    /// Dispatch a primary-button click at physical viewport coordinates.
+    pub fn click(&mut self, view: ViewId, x: i32, y: i32) -> Result<(), String> {
+        self.view(view)?;
+        for (kind, buttons) in [(1, 1), (2, 0)] {
+            self.engine.mouse(
+                view,
+                MouseInput {
+                    kind,
+                    x,
+                    y,
+                    button: 1,
+                    buttons,
+                    clicks: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        Ok(())
+    }
     pub fn mouse(&mut self, view: ViewId, input: MouseInput) -> Result<(), String> {
         self.view(view)?;
         self.engine.mouse(view, input);
@@ -637,6 +679,12 @@ impl Browser {
                     self.clipboard.clone_from(&event.text);
                     BrowserEvent::ClipboardChanged { text: event.text }
                 }
+                11 => match serde_json::from_str(&event.text) {
+                    Ok(picker) => BrowserEvent::FilePickerRequested { view, picker },
+                    Err(error) => BrowserEvent::Error {
+                        message: error.to_string(),
+                    },
+                },
                 _ => continue,
             };
             self.events.push_back(event);

@@ -71,6 +71,21 @@ with tempfile.TemporaryDirectory(prefix='bug-features-') as tmp:
         for script, name in [("throw new Error('bad news')",'Error'), ('const =','SyntaxError'), ("Promise.reject(new TypeError('nope'))",'TypeError'), ('const cyclic={}; cyclic.self=cyclic; cyclic','TypeError')]:
             result = c.eval(view, script)
             assert result['type']=='error' and result['name']==name, result
+        # A headless controller opens the page's real file input and replies by ID.
+        upload = Path(tmp) / 'upload.txt'
+        upload.write_text('picked by the controller')
+        setup = """const input = document.createElement('input');
+            input.id='upload'; input.type='file'; input.accept='.txt';
+            input.style='position:fixed;top:0;left:0;z-index:9999';
+            input.onchange=async()=>document.title=await input.files[0].text();
+            document.body.append(input); true"""
+        assert c.eval(view, setup) == {'type':'json','value':True}
+        c.send({'cmd':'click','view':view,'x':20,'y':10})
+        picker = c.wait(lambda e:e['event']=='file_picker_requested')
+        assert picker['view']==view and not picker['multiple'] and picker['accept']==['.txt'], picker
+        c.send({'cmd':'reply_file_picker','view':view,'request':picker['request'],'paths':[str(upload)]})
+        c.wait(lambda e:e['event']=='title' and e['title']=='picked by the controller')
+        c.eval(view, "document.getElementById('upload').remove()")
         # Correlate concurrent requests; the slower first script must not be lost.
         for script in ["new Promise(r=>setTimeout(()=>r('first'),50))", "'second'"]:
             c.send({'cmd':'eval','view':view,'script':script})
@@ -128,7 +143,7 @@ with tempfile.TemporaryDirectory(prefix='bug-features-') as tmp:
         assert views[0]['viewport']==snapshot['views'][0]['viewport']
         assert restored.eval(views[0]['view'], 'document.title') == {'type':'json','value':'restored hook'}
         restored.stop()
-        print('PASS: eval values/promises/errors/correlation/cancellation, Unicode copy/cut/paste, named metadata, snapshot validation, save and fresh-process restore')
+        print('PASS: headless file upload, eval values/promises/errors/correlation/cancellation, Unicode copy/cut/paste, named metadata, snapshot validation, save and fresh-process restore')
     except BaseException:
         for c in clients:
             c.log.flush(); c.log.seek(0); print(c.log.read()); print(c.history[-20:])

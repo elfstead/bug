@@ -26,6 +26,7 @@ type Open = unsafe extern "C" fn(*const c_char) -> u64;
 type Navigate = unsafe extern "C" fn(u64, *const c_char) -> i32;
 type Evaluate = unsafe extern "C" fn(u64, u64, *const c_char) -> i32;
 type Action = unsafe extern "C" fn(u64, u32, *const c_char, f64) -> i32;
+type ReplyFilePicker = unsafe extern "C" fn(u64, u64, *const *const c_char, usize) -> i32;
 type Resize = unsafe extern "C" fn(u64, u32, u32, f64) -> i32;
 type Frame = unsafe extern "C" fn(u64, *mut u32, usize, *mut u32, *mut u32) -> usize;
 type Mouse = unsafe extern "C" fn(u64, u32, i32, i32, u32, u32, u32, f64, f64, u32) -> i32;
@@ -46,6 +47,7 @@ pub struct Engine {
     evaluate: Evaluate,
     action: Action,
     resize: Resize,
+    reply_file_picker: ReplyFilePicker,
     frame: Frame,
     mouse: Mouse,
     key: Key,
@@ -92,9 +94,9 @@ impl Engine {
             let version = library
                 .get::<unsafe extern "C" fn() -> u32>(b"bug_abi_version\0")
                 .map_err(library_error)?;
-            if version() != 2 {
+            if version() != 3 {
                 return Err(
-                    "unsupported Bug engine ABI (expected 2); rebuild with scripts/build-engine"
+                    "unsupported Bug engine ABI (expected 3); rebuild with scripts/build-engine"
                         .into(),
                 );
             }
@@ -117,6 +119,7 @@ impl Engine {
                 navigate: symbol!("bug_navigate", Navigate),
                 evaluate: symbol!("bug_evaluate", Evaluate),
                 action: symbol!("bug_action", Action),
+                reply_file_picker: symbol!("bug_reply_file_picker", ReplyFilePicker),
                 resize: symbol!("bug_resize", Resize),
                 frame: symbol!("bug_frame", Frame),
                 mouse: symbol!("bug_mouse", Mouse),
@@ -168,6 +171,27 @@ impl Engine {
             unsafe { (self.action)(id, action, text.as_ptr(), number) },
             id,
         )
+    }
+    pub fn reply_file_picker(
+        &mut self,
+        view: u64,
+        request: u64,
+        paths: &[std::path::PathBuf],
+    ) -> Result<bool, String> {
+        let names = paths
+            .iter()
+            .map(|path| {
+                CString::new(path.as_os_str().as_encoded_bytes()).map_err(|e| e.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let pointers: Vec<_> = names.iter().map(|name| name.as_ptr()).collect();
+        match unsafe { (self.reply_file_picker)(view, request, pointers.as_ptr(), pointers.len()) }
+        {
+            1 => Ok(true),
+            0 => Ok(false),
+            -1 => Err("this picker accepts only one file".into()),
+            _ => Err("could not open every selected file".into()),
+        }
     }
     pub fn resize(&mut self, id: u64, width: u32, height: u32, scale: f64) -> Result<(), String> {
         success(unsafe { (self.resize)(id, width, height, scale) }, id)

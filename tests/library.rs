@@ -52,6 +52,86 @@ fn frame(browser: &mut Browser, view: u64, width: u32, height: u32) -> Frame {
     }
 }
 
+fn exercise_file_picker(browser: &mut Browser, dir: &std::path::Path) {
+    let html = dir.join("picker.html");
+    std::fs::write(&html, r#"<input type=file accept=".txt,image/*,application/pdf"
+        oncancel="document.title='cancelled'"
+        onchange="Promise.all([...this.files].map(async f => f.name + '=' + await f.text())).then(names => document.title=names.join(','))">"#).unwrap();
+    let file = dir.join("sample.txt");
+    std::fs::write(&file, "hello").unwrap();
+    let other = dir.join("second.txt");
+    std::fs::write(&other, "world").unwrap();
+    let view = browser.open(&format!("file://{}", html.display())).unwrap();
+    until(
+        browser,
+        |event| matches!(event, BrowserEvent::Loaded { view: id, .. } if *id == view),
+    );
+    let open_picker = |browser: &mut Browser, multiple| {
+        browser.click(view, 20, 16).unwrap();
+        let mut request = 0;
+        until(browser, |event| {
+            if let BrowserEvent::FilePickerRequested { view: id, picker } = event {
+                assert_eq!(*id, view);
+                assert_eq!(picker.multiple, multiple);
+                assert_eq!(picker.accept, [".txt", "image/*", "application/pdf"]);
+                request = picker.request;
+                return true;
+            }
+            false
+        });
+        request
+    };
+    let first = open_picker(browser, false);
+    assert!(
+        browser
+            .reply_file_picker(view, first, &[file.clone(), other.clone()])
+            .is_err()
+    );
+    assert!(browser.reply_file_picker(view, first, &[]).unwrap());
+    until(
+        browser,
+        |event| matches!(event, BrowserEvent::Title { title, .. } if title == "cancelled"),
+    );
+    browser
+        .eval(
+            view,
+            "document.querySelector('input').multiple=true; document.title='choose two'",
+        )
+        .unwrap();
+    until(
+        browser,
+        |event| matches!(event, BrowserEvent::Title { title, .. } if title == "choose two"),
+    );
+    let second = open_picker(browser, true);
+    assert!(!browser.reply_file_picker(view, first, &[]).unwrap());
+    assert!(
+        browser
+            .reply_file_picker(view, second, &[dir.join("missing")])
+            .is_err()
+    );
+    assert!(
+        browser
+            .reply_file_picker(view, second, &[file, other])
+            .unwrap()
+    );
+    until(
+        browser,
+        |event| matches!(event, BrowserEvent::Title { title, .. } if title == "sample.txt=hello,second.txt=world"),
+    );
+    let last = open_picker(browser, true);
+    browser.navigate(view, "about:blank").unwrap();
+    assert!(!browser.reply_file_picker(view, last, &[]).unwrap());
+    until(
+        browser,
+        |event| matches!(event, BrowserEvent::Loaded { view: id, url } if *id == view && url == "about:blank"),
+    );
+    browser.close(view).unwrap();
+    until(
+        browser,
+        |event| matches!(event, BrowserEvent::Closed { view: id } if *id == view),
+    );
+}
+
 #[test]
 #[ignore = "requires the built native engine; run with DISPLAY and WAYLAND_DISPLAY unset"]
 fn independent_rust_api_without_a_display_or_json() {
@@ -145,6 +225,7 @@ fn independent_rust_api_without_a_display_or_json() {
         &mut browser,
         |e| matches!(e, BrowserEvent::Title { title, .. } if title == "API load hook"),
     );
+    exercise_file_picker(&mut browser, &profile);
     let second = browser.open("about:blank").unwrap();
     assert_eq!(browser.views().count(), 2);
     browser.close(second).unwrap();

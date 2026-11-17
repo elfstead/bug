@@ -10,7 +10,7 @@ extern "C" {
 // must copy their borrowed text before returning and must not call back into Bug.
 // The ABI is deliberately small; no AK, C++, or Rust-owned types cross it.
 typedef void (*BugEvent)(void*, uint32_t kind, uint64_t view, const char* text, size_t length);
-enum { BUG_OPENED = 1, BUG_CLOSED, BUG_TITLE, BUG_URL, BUG_LOADED, BUG_FRAME, BUG_HOOK, BUG_ERROR, BUG_EVALUATED, BUG_CLIPBOARD };
+enum { BUG_OPENED = 1, BUG_CLOSED, BUG_TITLE, BUG_URL, BUG_LOADED, BUG_FRAME, BUG_HOOK, BUG_ERROR, BUG_EVALUATED, BUG_CLIPBOARD, BUG_FILE_PICKER };
 enum { BUG_BACK = 1, BUG_FORWARD, BUG_RELOAD, BUG_STOP, BUG_CLOSE, BUG_EVAL, BUG_ZOOM, BUG_FOCUS, BUG_BLUR, BUG_COPY, BUG_CUT, BUG_PASTE };
 
 uint32_t bug_abi_version(void);
@@ -20,6 +20,8 @@ void bug_pump(void);
 uint64_t bug_open(const char* url);
 int bug_navigate(uint64_t view, const char* url);
 int bug_evaluate(uint64_t view, uint64_t request, const char* function_body);
+// 1: accepted, 0: stale request, -1: too many files, -2: unreadable file.
+int bug_reply_file_picker(uint64_t view, uint64_t request, const char* const* paths, size_t count);
 int bug_action(uint64_t view, uint32_t action, const char* text, double number);
 int bug_resize(uint64_t view, uint32_t width, uint32_t height, double scale);
 // Returns the number of pixels, or zero if there is no CPU frame. When capacity
