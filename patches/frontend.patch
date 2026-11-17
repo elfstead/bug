@@ -1,8 +1,33 @@
+diff --git a/AK/Platform.h b/AK/Platform.h
+index 1e740de9..6a345486 100644
+--- a/AK/Platform.h
++++ b/AK/Platform.h
+@@ -153,7 +153,7 @@
+ // Reads a thread-local variable straight from the thread pointer instead of through __tls_get_addr(). It is for hot
+ // variables of libraries that a program links, since a library that dlopen() loads later has no room for them: Android
+ // loads all of its code that way.
+-#if defined(__ELF__) && !defined(AK_OS_ANDROID)
++#if defined(__ELF__) && !defined(AK_OS_ANDROID) && !defined(BUG_DYNAMIC_ENGINE)
+ #    define AK_TLS_INITIAL_EXEC __attribute__((tls_model("initial-exec")))
+ #else
+ #    define AK_TLS_INITIAL_EXEC
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 7a8777be..d6eec9cc 100644
+index 7a8777be..eee48191 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -140,7 +140,11 @@ endif()
+@@ -69,6 +69,11 @@ if (ENABLE_COMPILETIME_FORMAT_CHECK)
+     add_compile_definitions(ENABLE_COMPILETIME_FORMAT_CHECK)
+ endif()
+ 
++if (BUG_FRONTEND_DIR)
++    # Bug loads the engine with dlopen(), after the host's TLS layout is fixed.
++    add_compile_definitions(BUG_DYNAMIC_ENGINE)
++endif()
++
+ add_library(JSClangPlugin INTERFACE)
+ add_library(GenericClangPlugin INTERFACE)
+ 
+@@ -140,7 +145,11 @@ endif()
  
  if (ENABLE_GUI_TARGETS)
      add_subdirectory(Services)

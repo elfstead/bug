@@ -8,6 +8,9 @@
 - Adapted CPU frame access, URL navigation, and plain-text paste to the current
   LibWebView interfaces. Packaging now includes Hub and SystemProbe, replacing
   the removed WebWorker helper, and excludes the official macOS updater.
+- Disabled upstream's initial-exec TLS optimization for Bug's dynamically loaded
+  engine. Preserved native loader error details after the libloading update,
+  with a regression test that passes in both Rust feature configurations.
 - Passed Rust formatting, tests, and Clippy with warnings denied, both with and
   without default features. Passed the adapter's C++ syntax check against the
   new engine headers, workflow validation, build-script argument tests, release

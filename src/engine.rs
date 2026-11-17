@@ -86,11 +86,12 @@ impl Engine {
         // has the signature declared by native/bug.h, guarded by the ABI version.
         unsafe {
             let library = ManuallyDrop::new(
-                Library::new(library).map_err(|e| format!("loading engine: {e}"))?,
+                Library::new(library)
+                    .map_err(|e| format!("loading engine: {}", library_error(e)))?,
             );
             let version = library
                 .get::<unsafe extern "C" fn() -> u32>(b"bug_abi_version\0")
-                .map_err(|e| e.to_string())?;
+                .map_err(library_error)?;
             if version() != 2 {
                 return Err(
                     "unsupported Bug engine ABI (expected 2); rebuild with scripts/build-engine"
@@ -101,7 +102,7 @@ impl Engine {
                 ($name:literal, $ty:ty) => {
                     *library
                         .get::<$ty>(concat!($name, "\0").as_bytes())
-                        .map_err(|e| e.to_string())?
+                        .map_err(library_error)?
                 };
             }
             let init = symbol!("bug_init", Init);
@@ -255,6 +256,12 @@ pub struct MouseInput {
 fn cstring(text: &str) -> Result<CString, String> {
     CString::new(text).map_err(|_| "text contains a NUL byte".into())
 }
+fn library_error(error: libloading::Error) -> String {
+    match std::error::Error::source(&error) {
+        Some(source) => format!("{error}: {source}"),
+        None => error.to_string(),
+    }
+}
 fn success(value: i32, id: u64) -> Result<(), String> {
     if value != 0 {
         Ok(())
@@ -266,6 +273,17 @@ fn success(value: i32, id: u64) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn library_errors_preserve_the_native_cause() {
+        // An absolute nonexistent path cannot resolve through library search paths.
+        let missing = std::env::temp_dir()
+            .join(format!("bug-missing-library-{}", std::process::id()))
+            .join("engine");
+        let error = unsafe { Library::new(missing) }.unwrap_err();
+        let cause = std::error::Error::source(&error).unwrap().to_string();
+        assert!(library_error(error).contains(&cause));
+    }
+
     #[test]
     fn callback_copies_borrowed_text_and_handles_empty_payloads() {
         let mut queue = VecDeque::<NativeEvent>::new();

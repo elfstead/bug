@@ -56,7 +56,8 @@ The Nix shell uses your `<nixpkgs>`; Ladybird and Cargo dependencies are pinned,
 but the Nix package collection currently follows your configured channel. The
 shell reuses the Ladybird package's engine dependencies and explicitly removes
 its Qt inputs. `patches/frontend.patch` selects Bug instead of `UI/Qt`, uses
-system FFmpeg names and capabilities outside vcpkg, and permits newer Rust compiler warnings. Preparation refuses
+thread-local storage compatible with dynamic loading, supports system FFmpeg
+outside vcpkg, and permits newer Rust compiler warnings. Preparation refuses
 to overwrite an unexpected Ladybird revision or incompatible local edits.
 `patches/api.patch` makes Ladybird's internal script-completion method virtual,
 allowing the adapter to receive execution results through existing IPC. It does
