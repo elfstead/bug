@@ -1,5 +1,23 @@
 # Validation
 
+## Dependency refresh — 2026-11-17
+
+- Updated Ladybird to `a9e99dbcba31ecdda29da67e4e6d38e86fd3ebce`, Rust to
+  1.100.0, and the Cargo lockfile to current compatible stable dependencies.
+  Release builds inherit this engine revision's vcpkg baseline and port overrides.
+- Adapted CPU frame access, URL navigation, and plain-text paste to the current
+  LibWebView interfaces. Packaging now includes Hub and SystemProbe, replacing
+  the removed WebWorker helper, and excludes the official macOS updater.
+- Passed Rust formatting, tests, and Clippy with warnings denied, both with and
+  without default features. Passed the adapter's C++ syntax check against the
+  new engine headers, workflow validation, build-script argument tests, release
+  identity tests, and Python static checks for the changed packaging scripts.
+- Full native compilation and real-browser checks run locally and in the
+  [release workflow](https://github.com/elfstead/bug/actions/workflows/release.yml).
+  Both platform archives must pass their extracted-package tests before release.
+
+## Initial implementation validation
+
 Run on 2026-11-06 on x86_64 Linux with the repository's Nix shell.
 Ladybird revision: `7786ab9c13f000a7f9fcd75248ee10d691a29195`.
 

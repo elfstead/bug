@@ -14,8 +14,8 @@ from version import build_info
 
 ROOT = Path(__file__).resolve().parents[2]
 ENGINE = ROOT / 'build/engine'
-HELPERS = ('AudioServer', 'Compositor', 'ImageDecoder', 'MediaServer', 'RequestServer',
-           'VideoDecoderServer', 'WebContent', 'WebRTCClient', 'WebWorker')
+HELPERS = ('AudioServer', 'Compositor', 'Hub', 'ImageDecoder', 'MediaServer', 'RequestServer',
+           'SystemProbe', 'VideoDecoderServer', 'WebContent', 'WebRTCClient')
 GLIBC = re.compile(r'^(ld-linux.*|lib(c|m|pthread|dl|rt|resolv|util|anl)\.so\..*)$')
 
 

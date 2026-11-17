@@ -15,6 +15,8 @@
 #include <LibWebCommon/Page/InputEvent.h>
 #include <LibWebCommon/WebView/Utilities.h>
 #include <LibWebView/Application.h>
+#include <LibWebView/PageBackingStores.h>
+#include <LibWebView/URL.h>
 #include <LibWebView/ViewImplementation.h>
 
 #include <cstring>
@@ -105,13 +107,14 @@ public:
     size_t copy_frame(uint32_t* dest, size_t capacity, uint32_t& width, uint32_t& height)
     {
         width = height = 0;
-        if (!m_has_usable_bitmap || !m_front_bitmap.shared_image_buffer)
+        auto frame = backing_stores().displayed_frame();
+        if (!frame.has_value() || !frame->shared_image_buffer)
             return 0;
-        auto bitmap = m_front_bitmap.shared_image_buffer->bitmap_if_present();
+        auto bitmap = frame->shared_image_buffer->bitmap_if_present();
         if (!bitmap)
             return 0;
-        width = min(bitmap->width(), m_front_bitmap.last_painted_size.width().value());
-        height = min(bitmap->height(), m_front_bitmap.last_painted_size.height().value());
+        width = min(bitmap->width(), frame->size.width());
+        height = min(bitmap->height(), frame->size.height());
         auto count = static_cast<size_t>(width) * height;
         if (dest && capacity >= count) {
             for (uint32_t y = 0; y < height; ++y)
@@ -243,8 +246,11 @@ uint64_t bug_open(char const* url)
 {
     if (!application || !url)
         return 0;
+    auto parsed_url = WebView::sanitize_url(StringView(url, strlen(url)), WebView::Application::settings().search_engine_settings().engine);
+    if (!parsed_url.has_value())
+        return 0;
     auto& view = new_view();
-    view.load_from_user_input(StringView(url, strlen(url)));
+    view.load(*parsed_url);
     return view.view_id();
 }
 
@@ -253,7 +259,10 @@ int bug_navigate(uint64_t id, char const* url)
     auto* view = lookup(id);
     if (!view || !url)
         return 0;
-    view->load_from_user_input(StringView(url, strlen(url)));
+    auto parsed_url = WebView::sanitize_url(StringView(url, strlen(url)), WebView::Application::settings().search_engine_settings().engine);
+    if (!parsed_url.has_value())
+        return 0;
+    view->load(*parsed_url);
     return 1;
 }
 
@@ -294,7 +303,7 @@ int bug_action(uint64_t id, uint32_t action, char const* text, double number)
         auto value = String::from_utf8(StringView(text, strlen(text)));
         if (value.is_error()) return 0;
         WebView::Application::the().set_clipboard_text(value.release_value());
-        view->paste_from_clipboard();
+        view->paste_from_clipboard(Web::Clipboard::PasteMode::PlainTextOnly);
         break;
     }
     default: return 0;
