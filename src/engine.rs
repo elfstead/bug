@@ -99,9 +99,10 @@ impl Engine {
     pub fn events(&mut self) -> VecDeque<NativeEvent> {
         std::mem::take(&mut *self.events)
     }
-    pub fn open(&mut self, url: &str) -> Result<u64, String> {
+    pub fn open(&mut self, url: &str, document_start_script: &str) -> Result<u64, String> {
         let url = cstring(url)?;
-        let id = unsafe { (self.symbols.open)(url.as_ptr()) };
+        let script = cstring(document_start_script)?;
+        let id = unsafe { (self.symbols.open)(url.as_ptr(), script.as_ptr()) };
         if id == 0 {
             Err("could not create view".into())
         } else {
@@ -114,10 +115,10 @@ impl Engine {
     }
     pub fn evaluate(&mut self, view: u64, request: u64, body: &str) -> Result<(), String> {
         let body = cstring(body)?;
-        success(
-            unsafe { (self.symbols.evaluate)(view, request, body.as_ptr()) },
-            view,
-        )
+        match unsafe { (self.symbols.evaluate)(view, request, body.as_ptr()) } {
+            -1 => Err("answer the pending modal dialog before evaluating a script".into()),
+            result => success(result, view),
+        }
     }
     pub fn action(&mut self, id: u64, action: u32, text: &str, number: f64) -> Result<(), String> {
         let text = cstring(text)?;
@@ -125,6 +126,29 @@ impl Engine {
             unsafe { (self.symbols.action)(id, action, text.as_ptr(), number) },
             id,
         )
+    }
+    pub fn reply_request(
+        &mut self,
+        view: u64,
+        request: u64,
+        kind: &CStr,
+        answer: i32,
+        text: &str,
+    ) -> Result<bool, String> {
+        match unsafe {
+            (self.symbols.reply_request)(
+                view,
+                request,
+                kind.as_ptr(),
+                answer,
+                text.as_ptr().cast(),
+                text.len(),
+            )
+        } {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err("reply does not match pending request".into()),
+        }
     }
     pub fn reply_file_picker(
         &mut self,

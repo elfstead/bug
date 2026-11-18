@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define BUG_ABI_VERSION 3
+#define BUG_ABI_VERSION 4
 
 // All calls belong to the initializing thread. Copy borrowed text before returning from the
 // callback. Reentry into Bug from the callback is unsupported.
@@ -25,6 +25,8 @@ enum {
     BUG_EVALUATED = 9,
     BUG_CLIPBOARD = 10,
     BUG_FILE_PICKER = 11,
+    BUG_REQUEST = 12,
+    BUG_REQUEST_CANCELLED = 13,
 };
 
 enum {
@@ -40,14 +42,21 @@ enum {
     BUG_COPY = 10,
     BUG_CUT = 11,
     BUG_PASTE = 12,
+    BUG_DOCUMENT_START_SCRIPT = 13,
+    BUG_SET_REQUEST_HANDLERS = 14,
 };
 
 uint32_t bug_abi_version(void);
 int bug_init(const char* executable_path, const char* profile_path, BugEvent callback, void* user);
 void bug_shutdown(void);
 void bug_pump(void);
-uint64_t bug_open(const char* url);
+uint64_t bug_open(const char* url, const char* document_start_script);
+// Returns 1 on success, 0 for an expired request, or -1 for an incompatible reply. Text is
+// UTF-8 with an explicit byte length.
+int bug_reply_request(uint64_t view, uint64_t request, const char* kind, int answer, const char* text, size_t length);
 int bug_navigate(uint64_t view, const char* url);
+// Returns 1 when queued, 0 for an invalid argument or view, and -1 while the controller owns a
+// modal dialog.
 int bug_evaluate(uint64_t view, uint64_t request, const char* function_body);
 // Returns 1 on success, 0 for a stale request, -1 for too many files, or -2 for an unreadable
 // file.

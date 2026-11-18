@@ -1,0 +1,171 @@
+diff --git a/Libraries/LibWeb/DOM/Document.cpp b/Libraries/LibWeb/DOM/Document.cpp
+index 6106771c..4bbeaf6e 100644
+--- a/Libraries/LibWeb/DOM/Document.cpp
++++ b/Libraries/LibWeb/DOM/Document.cpp
+@@ -8302,6 +8302,12 @@ void Document::update_for_history_step_application(NonnullRefPtr<HTML::SessionHi
+         if (!scrolling_blocked_in_new_document)
+             try_to_scroll_to_the_fragment(allow_text_directive_scroll);
+
++        if (auto navigable = this->navigable(); navigable && navigable->is_top_level_traversable() && !page().document_start_script().is_empty()) {
++            auto& settings = relevant_settings_object();
++            auto script = HTML::ClassicScript::create("(document start)", page().document_start_script(), settings, settings.api_base_url());
++            (void)script->run();
++        }
++
+         // 4. At this point scripts may run for the newly-created document document.
+         set_ready_to_run_scripts();
+     }
+@@ -11400,7 +11406,7 @@ bool Document::showing_an_unload_prompt_is_unlikely_to_be_annoying_deceptive_or_
+ {
+     // FIXME: Propagate enough WebDriver session information to test for exactly one active HTTP-only,
+     //        non-BiDi session instead of treating any active WebDriver session as equivalent.
+-    if (page().is_webdriver_active())
++    if (page().is_webdriver_active() && !page().controller_handles_before_unload())
+         return false;
+
+     // FIXME: Revisit this approximation of "unlikely to be annoying, deceptive, or pointless".
+diff --git a/Libraries/LibWeb/Page/Page.h b/Libraries/LibWeb/Page/Page.h
+index 19676464..3958e0ea 100644
+--- a/Libraries/LibWeb/Page/Page.h
++++ b/Libraries/LibWeb/Page/Page.h
+@@ -265,6 +265,8 @@ public:
+     bool needs_beforeunload_check() const { return m_needs_beforeunload_check; }
+     void update_needs_beforeunload_check();
+
++    void set_controller_handles_before_unload(bool enabled) { m_controller_handles_before_unload = enabled; }
++    bool controller_handles_before_unload() const { return m_controller_handles_before_unload; }
+     bool is_webdriver_active() const { return m_is_webdriver_active; }
+     void set_is_webdriver_active(bool b) { m_is_webdriver_active = b; }
+
+@@ -473,6 +475,8 @@ public:
+
+     Optional<Utf16String> const& user_style() const { return m_user_style_sheet_source; }
+     void set_user_style(Utf16String source);
++    void set_document_start_script(Utf16String source) { m_document_start_script = move(source); }
++    Utf16String const& document_start_script() const { return m_document_start_script; }
+     void invalidate_user_style();
+     void invalidate_style_for_preference_change();
+
+@@ -676,6 +680,8 @@ private:
+     size_t m_active_screen_wake_lock_count { 0 };
+
+     Optional<Utf16String> m_user_style_sheet_source;
++    Utf16String m_document_start_script;
++    bool m_controller_handles_before_unload { false };
+
+     bool m_content_blocking_enabled { true };
+     HashTable<String> m_content_blocking_disabled_sites;
+diff --git a/Libraries/LibWebView/ViewImplementation.cpp b/Libraries/LibWebView/ViewImplementation.cpp
+index 82a3bb5d..dcbbf257 100644
+--- a/Libraries/LibWebView/ViewImplementation.cpp
++++ b/Libraries/LibWebView/ViewImplementation.cpp
+@@ -2763,6 +2763,23 @@ void ViewImplementation::debug_request(ByteString const& request, ByteString con
+     page().async_debug_request(request, argument);
+ }
+
++void ViewImplementation::set_controller_handles_before_unload(bool enabled)
++{
++    m_controller_handles_before_unload = enabled;
++    traversable().for_each_hosting_page([&](WebContentPage& host) {
++        host.async_set_controller_handles_before_unload(enabled);
++    });
++}
++
++void ViewImplementation::set_document_start_script(String source)
++{
++    m_document_start_script = move(source);
++    traversable().for_each_hosting_page([&](WebContentPage& host) {
++        if (host.displays_tab())
++            host.async_set_document_start_script(m_document_start_script);
++    });
++}
++
+ void ViewImplementation::run_javascript(String const& js_source)
+ {
+     page().async_run_javascript(js_source);
+@@ -3644,6 +3661,7 @@ bool ViewImplementation::is_running_webdriver_window_command_in(WebContentPage c
+
+ void ViewImplementation::prepare_page_for_navigable(WebContentPage& page)
+ {
++    page.async_set_controller_handles_before_unload(m_controller_handles_before_unload);
+     page.async_set_zoom_level(m_zoom_level);
+     if (m_window_position.has_value())
+         page.async_set_window_position(m_window_position->to_type<Web::DevicePixels>());
+@@ -3675,6 +3693,7 @@ void ViewImplementation::prepare_page_for_navigable(WebContentPage& page)
+ void ViewImplementation::prepare_page_for_tab(WebContentPage& page)
+ {
+     prepare_page_for_navigable(page);
++    page.async_set_document_start_script(m_document_start_script);
+     // The window handle names the tab to WebDriver, and the viewport is the tab's: both belong to the page displaying
+     // it, whose traversable is local.
+     page.async_set_window_handle(m_window_handle);
+diff --git a/Libraries/LibWebView/ViewImplementation.h b/Libraries/LibWebView/ViewImplementation.h
+index 7d5b6389..78794001 100644
+--- a/Libraries/LibWebView/ViewImplementation.h
++++ b/Libraries/LibWebView/ViewImplementation.h
+@@ -490,6 +490,8 @@ public:
+
+     void debug_request(ByteString const& request, ByteString const& argument = {});
+
++    void set_document_start_script(String);
++    void set_controller_handles_before_unload(bool);
+     void run_javascript(String const&);
+     void js_console_input(String const&);
+     void exit_fullscreen();
+@@ -1142,6 +1144,8 @@ protected:
+
+     // https://w3c.github.io/webdriver/#dfn-current-browsing-context
+     // NB: The current top-level browsing context is the current browsing context when this is unset.
++    String m_document_start_script;
++    bool m_controller_handles_before_unload { false };
+     Optional<Web::HTML::CrossProcessId> m_webdriver_current_navigable_id;
+     // https://w3c.github.io/webdriver/#dfn-current-parent-browsing-context
+     Optional<Web::HTML::CrossProcessId> m_webdriver_current_parent_navigable_id;
+diff --git a/Services/WebContent/ConnectionFromClient.cpp b/Services/WebContent/ConnectionFromClient.cpp
+index 09f15a35..29170860 100644
+--- a/Services/WebContent/ConnectionFromClient.cpp
++++ b/Services/WebContent/ConnectionFromClient.cpp
+@@ -3670,6 +3670,18 @@ void ConnectionFromClient::complete_js_console_input(Web::PageId page_id, u64 re
+     async_did_complete_js_console_input(page_id, request_id, move(completion->matches), move(completion->match_prop));
+ }
+
++void ConnectionFromClient::set_controller_handles_before_unload(Web::PageId page_id, bool enabled)
++{
++    if (auto page = this->page(page_id); page.has_value())
++        page->page().set_controller_handles_before_unload(enabled);
++}
++
++void ConnectionFromClient::set_document_start_script(Web::PageId page_id, String source)
++{
++    if (auto page = this->page(page_id); page.has_value())
++        page->page().set_document_start_script(Utf16String::from_utf8(source));
++}
++
+ void ConnectionFromClient::run_javascript(Web::PageId page_id, String js_source)
+ {
+     if (auto page = this->page(page_id); page.has_value())
+diff --git a/Services/WebContent/ConnectionFromClient.h b/Services/WebContent/ConnectionFromClient.h
+index 2bb74505..fe011489 100644
+--- a/Services/WebContent/ConnectionFromClient.h
++++ b/Services/WebContent/ConnectionFromClient.h
+@@ -290,6 +290,8 @@ private:
+     virtual void reset_zoom(Web::PageId page_id) override;
+
+     virtual void js_console_input(Web::PageId page_id, String) override;
++    virtual void set_controller_handles_before_unload(Web::PageId, bool) override;
++    virtual void set_document_start_script(Web::PageId, String) override;
+     virtual void run_javascript(Web::PageId page_id, String) override;
+
+     virtual void did_open_dialog_in_another_process(Web::PageId page_id, Web::Page::PendingDialog dialog, Utf16String message) override;
+diff --git a/Services/WebContent/WebContentServer.ipc b/Services/WebContent/WebContentServer.ipc
+index 11746fbd..4df0bfc4 100644
+--- a/Services/WebContent/WebContentServer.ipc
++++ b/Services/WebContent/WebContentServer.ipc
+@@ -355,4 +355,7 @@ endpoint WebContentServer routed by Web::PageId page_id
+     picture_in_picture_window_did_resize(Web::PageId page_id, Gfx::IntSize window_size) =|
+     picture_in_picture_window_did_close(Web::PageId page_id, bool pause_video) =|
+     set_picture_in_picture_window_controls_in_use(Web::PageId page_id, bool in_use) =|
++
++    set_controller_handles_before_unload(Web::PageId page_id, bool enabled) =|
++    set_document_start_script(Web::PageId page_id, String source) =|
+ }

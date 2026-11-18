@@ -17,7 +17,7 @@ def callback(user, kind, view, text, size):
 lib.bug_abi_version.restype = c.c_uint32
 lib.bug_init.argtypes = [c.c_char_p, c.c_char_p, callback_type, c.c_void_p]
 lib.bug_init.restype = c.c_int
-lib.bug_open.argtypes = [c.c_char_p]
+lib.bug_open.argtypes = [c.c_char_p, c.c_char_p]
 lib.bug_open.restype = c.c_uint64
 lib.bug_frame.argtypes = [c.c_uint64, c.POINTER(c.c_uint32), c.c_size_t, c.POINTER(c.c_uint32), c.POINTER(c.c_uint32)]
 lib.bug_frame.restype = c.c_size_t
@@ -25,10 +25,10 @@ lib.bug_pump.restype = None
 lib.bug_shutdown.restype = None
 
 with tempfile.TemporaryDirectory(prefix='bug-render-') as profile:
-    assert lib.bug_abi_version() == 3
+    assert lib.bug_abi_version() == 4
     assert lib.bug_init(str(root / 'build/engine/bin/bug').encode(), profile.encode(), callback, None), events
     try:
-        view = lib.bug_open((root / 'examples/smoke.html').as_uri().encode())
+        view = lib.bug_open((root / 'examples/smoke.html').as_uri().encode(), b'')
         assert view
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:

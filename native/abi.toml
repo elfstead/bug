@@ -1,5 +1,5 @@
 # Stable numeric IDs. Append new IDs and bump the version for incompatible changes.
-version = 3
+version = 4
 
 [events]
 OPENED = 1
@@ -13,6 +13,8 @@ ERROR = 8
 EVALUATED = 9
 CLIPBOARD = 10
 FILE_PICKER = 11
+REQUEST = 12
+REQUEST_CANCELLED = 13
 
 [actions]
 BACK = 1
@@ -27,6 +29,8 @@ BLUR = 9
 COPY = 10
 CUT = 11
 PASTE = 12
+DOCUMENT_START_SCRIPT = 13
+SET_REQUEST_HANDLERS = 14
 
 [callbacks]
 BugEvent = "void(void* user, uint32_t kind, uint64_t view, const char* text, size_t length)"
@@ -36,7 +40,8 @@ BugEvent = "void(void* user, uint32_t kind, uint64_t view, const char* text, siz
 init = "int(const char* executable_path, const char* profile_path, BugEvent callback, void* user)"
 shutdown = "void()"
 pump = "void()"
-open = "uint64_t(const char* url)"
+open = "uint64_t(const char* url, const char* document_start_script)"
+reply_request = "int(uint64_t view, uint64_t request, const char* kind, int answer, const char* text, size_t length)"
 navigate = "int(uint64_t view, const char* url)"
 evaluate = "int(uint64_t view, uint64_t request, const char* function_body)"
 reply_file_picker = "int(uint64_t view, uint64_t request, const char* const* paths, size_t count)"
@@ -47,6 +52,8 @@ mouse = "int(uint64_t view, uint32_t kind, int32_t x, int32_t y, uint32_t button
 key = "int(uint64_t view, int pressed, const char* key, uint32_t codepoint, uint32_t modifiers, int repeat)"
 
 [docs]
+evaluate = "Returns 1 when queued, 0 for an invalid argument or view, and -1 while the controller owns a modal dialog."
+reply_request = "Returns 1 on success, 0 for an expired request, or -1 for an incompatible reply. Text is UTF-8 with an explicit byte length."
 BugEvent = "All calls belong to the initializing thread. Copy borrowed text before returning from the callback. Reentry into Bug from the callback is unsupported."
 reply_file_picker = "Returns 1 on success, 0 for a stale request, -1 for too many files, or -2 for an unreadable file."
 frame = "Returns the pixel count, or zero without a CPU frame. With insufficient capacity, writes only the dimensions. Pixels are packed as 0x00RRGGBB."

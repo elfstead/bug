@@ -110,6 +110,14 @@ pub struct FilePickerRequest {
 /// Library events contain no window-system handles or transport framing.
 #[derive(Debug, Clone)]
 pub enum BrowserEvent {
+    Request {
+        view: ViewId,
+        callback: crate::BrowserRequest,
+    },
+    RequestCancelled {
+        view: ViewId,
+        request: u64,
+    },
     FilePickerRequested {
         view: ViewId,
         picker: FilePickerRequest,
@@ -207,6 +215,7 @@ pub struct KeyInput<'a> {
 struct ViewState {
     info: ViewInfo,
     load_script: String,
+    document_start_script: String,
 }
 
 /// Owns view lifetimes, state, scripts, and the profile lock. Construct, operate,
@@ -292,13 +301,21 @@ impl Browser {
             .ok_or_else(|| format!("unknown view {id}"))
     }
     pub fn open(&mut self, url: &str) -> Result<ViewId, String> {
-        let id = self.engine.open(url)?;
+        self.open_with_document_start_script(url, "")
+    }
+    /// Register the script before issuing the first navigation.
+    pub fn open_with_document_start_script(
+        &mut self,
+        url: &str,
+        script: &str,
+    ) -> Result<ViewId, String> {
+        let id = self.engine.open(url, script)?;
         self.collect_events();
-        if let Some(state) = self.views.get_mut(&id)
-            && state.info.url.is_empty()
-        {
+        let state = self.views.get_mut(&id).ok_or("missing new view")?;
+        if state.info.url.is_empty() {
             state.info.url = url.into();
         }
+        state.document_start_script = script.into();
         Ok(id)
     }
     pub fn navigate(&mut self, view: ViewId, url: &str) -> Result<(), String> {
@@ -318,9 +335,50 @@ impl Browser {
     }
     /// Closure is asynchronous. Keep client resources until the Closed event.
     pub fn close(&mut self, view: ViewId) -> Result<(), String> {
-        self.engine.action(view, actions::CLOSE, "", 0.)?;
-        self.cancel_evaluations(view, "view is closing");
-        Ok(())
+        self.engine.action(view, actions::CLOSE, "", 0.)
+    }
+    /// Replace the kinds this controller answers. Removing a kind settles its pending requests.
+    pub fn set_request_handlers(
+        &mut self,
+        view: ViewId,
+        kinds: &[crate::RequestKind],
+    ) -> Result<(), String> {
+        let handlers = serde_json::to_string(kinds).map_err(|e| e.to_string())?;
+        self.engine
+            .action(view, actions::SET_REQUEST_HANDLERS, &handlers, 0.)
+    }
+    /// Answer exactly one request. A late or duplicate reply returns false.
+    pub fn reply_request(
+        &mut self,
+        view: ViewId,
+        request: u64,
+        reply: crate::RequestReply,
+    ) -> Result<bool, String> {
+        use crate::{PermissionAnswer, RequestReply};
+        let (kind, answer, text) = match &reply {
+            RequestReply::FilePicker { paths } => {
+                return self.reply_file_picker(view, request, paths);
+            }
+            RequestReply::Alert => (c"alert", 1, ""),
+            RequestReply::Confirm { accept } => (c"confirm", i32::from(*accept), ""),
+            RequestReply::BeforeUnload { leave } => (c"before_unload", i32::from(*leave), ""),
+            RequestReply::Prompt { text } => (
+                c"prompt",
+                i32::from(text.is_some()),
+                text.as_deref().unwrap_or(""),
+            ),
+            RequestReply::Permission { decision } => (
+                c"permission",
+                match decision {
+                    PermissionAnswer::Dismiss => 0,
+                    PermissionAnswer::AllowOnce => 1,
+                    PermissionAnswer::AllowAlways => 2,
+                    PermissionAnswer::Block => 3,
+                },
+                "",
+            ),
+        };
+        self.engine.reply_request(view, request, kind, answer, text)
     }
     /// Supply trusted local files, or an empty slice to cancel. Returns false for
     /// a stale request. On a file error the request stays open for retry/cancel.
@@ -402,6 +460,7 @@ impl Browser {
                     zoom: v.info.zoom,
                     metadata: v.info.metadata.clone(),
                     load_script: v.load_script.clone(),
+                    document_start_script: v.document_start_script.clone(),
                 })
                 .collect(),
         }
@@ -419,7 +478,8 @@ impl Browser {
         }
         let mut ids = Vec::new();
         for saved in &snapshot.views {
-            let id = self.open(&saved.url)?;
+            let id =
+                self.open_with_document_start_script(&saved.url, &saved.document_start_script)?;
             self.resize(id, saved.viewport)?;
             self.set_zoom(id, saved.zoom)?;
             self.set_load_script(id, &saved.load_script)?;
@@ -482,6 +542,16 @@ impl Browser {
     pub fn set_zoom(&mut self, view: ViewId, factor: f64) -> Result<(), String> {
         self.engine.action(view, actions::ZOOM, "", factor)?;
         self.views.get_mut(&view).ok_or("missing view")?.info.zoom = factor;
+        Ok(())
+    }
+    /// Replace the script for subsequent top-level documents. Empty source clears it.
+    pub fn set_document_start_script(&mut self, view: ViewId, script: &str) -> Result<(), String> {
+        self.engine
+            .action(view, actions::DOCUMENT_START_SCRIPT, script, 0.)?;
+        self.views
+            .get_mut(&view)
+            .ok_or("missing view")?
+            .document_start_script = script.into();
         Ok(())
     }
     pub fn set_load_script(&mut self, view: ViewId, script: &str) -> Result<(), String> {
@@ -561,6 +631,13 @@ impl Browser {
     }
     pub fn mouse(&mut self, view: ViewId, input: MouseInput) -> Result<(), String> {
         self.view(view)?;
+        if input.kind > 4
+            || !input.dx.is_finite()
+            || !input.dy.is_finite()
+            || input.clicks > i32::MAX as u32
+        {
+            return Err("invalid pointer event".into());
+        }
         self.engine.mouse(view, input);
         Ok(())
     }
@@ -599,6 +676,7 @@ impl Browser {
                                 metadata: ViewMetadata::default(),
                             },
                             load_script: String::new(),
+                            document_start_script: String::new(),
                         },
                     );
                     if self.default_viewport != Viewport::default()
@@ -690,6 +768,18 @@ impl Browser {
                     self.clipboard.clone_from(&event.text);
                     BrowserEvent::ClipboardChanged { text: event.text }
                 }
+                events::REQUEST => match serde_json::from_str(&event.text) {
+                    Ok(callback) => BrowserEvent::Request { view, callback },
+                    Err(e) => BrowserEvent::Error {
+                        message: e.to_string(),
+                    },
+                },
+                events::REQUEST_CANCELLED => match event.text.parse() {
+                    Ok(request) => BrowserEvent::RequestCancelled { view, request },
+                    Err(_) => BrowserEvent::Error {
+                        message: "invalid cancelled request ID".into(),
+                    },
+                },
                 events::FILE_PICKER => match serde_json::from_str(&event.text) {
                     Ok(picker) => BrowserEvent::FilePickerRequested { view, picker },
                     Err(error) => BrowserEvent::Error {

@@ -62,7 +62,7 @@ target/debug/bug https://ladybird.org
 The first engine build is substantial. Subsequent builds are incremental. The
 helper binaries and resources remain in `build/engine`; Bug loads
 `build/engine/lib/libbug_engine.so`. Use `--engine PATH` to select another build
-with ABI version 3. Rebuild the engine after updating an older checkout.
+with ABI version 4. Rebuild the engine after updating an older checkout.
 `--help` works without building the engine.
 
 The Nix shell uses your `<nixpkgs>`; Ladybird and Cargo dependencies are pinned,
@@ -77,6 +77,9 @@ to overwrite an unexpected Ladybird revision or incompatible local edits.
 `patches/api.patch` makes Ladybird's internal script-completion method virtual,
 allowing the adapter to receive execution results through existing IPC. It does
 not start a WebDriver server or add a socket.
+`patches/controller-hooks.patch` passes a per-view script to the renderer over
+Ladybird’s page IPC and runs it before the top-level document starts its parser.
+It also enables explicitly requested before-unload prompts during automation.
 
 Profiles default to `$XDG_DATA_HOME/bug/profile` (or
 `~/.local/share/bug/profile`). Use `--profile /absolute/path` for an isolated one.
@@ -265,9 +268,79 @@ target/debug/bug --session /tmp/bug-session.json
 target/debug/bug --headless --session /tmp/bug-session.json
 ```
 
+## Controller callbacks
+
+Rust controllers receive notifications through `Controller::event` or
+`Browser::drain_events`. The JSON stream includes all notifications by default.
+Use `subscribe` to replace the notification list, or pass `null` to restore all.
+Replies, errors and requests that need an answer are always delivered.
+
+```json
+{"cmd":"subscribe","events":["opened","closed","loaded"]}
+{"cmd":"set_request_handlers","view":1,"kinds":["confirm","file_picker"]}
+{"event":"request","view":1,"request":7,"kind":"confirm","message":"Discard draft?"}
+{"cmd":"reply_request","view":1,"request":7,"reply":{"kind":"confirm","accept":false}}
+```
+
+Register handlers before navigating if a page might ask during its first
+script. Each registration replaces the list for that view. Match both the
+view and request ID when replying. Handle `request_cancelled` by dismissing
+any outstanding UI for that ID. Removing a handler or closing JSON stdin
+settles its pending requests using the default response.
+
+| Request kind | Fields on the request | Fields in the reply alongside `kind` |
+| --- | --- | --- |
+| `alert` | `message` | None |
+| `confirm` | `message` | `accept` (boolean) |
+| `prompt` | `message`, `default` | `text` (string, or null to cancel) |
+| `before_unload` | `source` | `leave` (boolean) |
+| `permission` | `name`, `origin`, `is_file`, `system_denied`, `show_os_hint` | `decision`: `dismiss`, `block`, `allow_once`, or `allow_always`. Use `dismiss` for a system-denied notice. |
+| `file_picker` | `multiple`, `accept` | `paths` (array of local paths, empty to cancel) |
+
+In Rust, use `Browser::set_request_handlers`, match `BrowserEvent::Request`,
+and call `Browser::reply_request` with a typed `RequestReply`. A registered
+file picker gives the controller sole responsibility for the chooser.
+An evaluation interrupted by a modal returns a `UserPromptOpened` error.
+The page script resumes after the controller answers.
+
+## Document-start scripts
+
+Supply `document_start_script` when opening a view to cover its first navigation.
+Use `set_document_start_script` to replace it for subsequent navigations,
+or pass an empty string to clear it. The script runs in the main JavaScript
+world of each newly loaded top-level document before inline page scripts.
+At that point the page body may not exist. A load script can still use the
+completed DOM. Session snapshots preserve both scripts.
+
+```json
+{"cmd":"open","url":"https://example.org","document_start_script":"window.addEventListener('DOMContentLoaded', () => console.log(document.title))"}
+{"cmd":"set_document_start_script","view":1,"script":""}
+```
+
+The corresponding Rust methods are `open_with_document_start_script`,
+`set_document_start_script`, and `set_load_script`.
+
+## Keyboard and pointer input
+
+`key` and `mouse` use the same Rust input path as the window client. Supply one
+key event per press or release. `name` is a Ladybird key label and `codepoint`
+is the Unicode scalar to insert on press, or zero for a non-text key.
+Modifier bits are Alt 1, Ctrl 2, Shift 4, and Super 8.
+
+```json
+{"cmd":"key","view":1,"name":"Escape","pressed":true}
+{"cmd":"key","view":1,"name":"Escape","pressed":false}
+{"cmd":"mouse","view":1,"kind":"wheel","x":200,"y":160,"dy":120}
+```
+
+Mouse kinds are `move`, `down`, `up`, `wheel`, and `leave`. Coordinates are
+physical viewport pixels. Optional fields are `button`, `buttons`, `modifiers`,
+`dx`, `dy`, and `clicks`. Each defaults to zero. Button masks are primary 1,
+secondary 2, middle 4, back 8, and forward 16.
+
 ## File inputs
 
-A page opening an HTML file input produces a `BrowserEvent::FilePickerRequested`.
+By default, a page opening an HTML file input produces a `BrowserEvent::FilePickerRequested`.
 Its request ID, view ID, multiple-selection flag, and HTML `accept` hints are
 available to every client. The windowed client opens a desktop chooser (the
 desktop portal on Linux or AppKit on macOS). It builds desktop filters from extensions, MIME types and media wildcards.
@@ -353,18 +426,21 @@ load scripts, a command palette, headless views, frame capture, and JSON event
 output through the shared Rust library API.
 
 This is an initial prototype. GPU presentation, IME composition,
-accessibility, select/color pickers, controller-driven permission
-and dialog replies, and complete download integration remain to be implemented.
+accessibility, select/color pickers, and complete download integration remain to be implemented.
 macOS has a clipboard implementation, but full window/input/HiDPI parity has
 not yet been verified on a Mac. CI tests the native clipboard against `pbcopy`
 and `pbpaste`; that does not replace testing Command shortcuts in a live window.
-Alerts emit an event and close; confirms/prompts and permission requests are
-dismissed. Before-unload requests are currently accepted. These defaults are
-explicit prototype behavior, not a finished policy system.
+By default, alerts close, confirms and prompts are dismissed, permission requests
+are dismissed, and before-unload requests are accepted. Controllers can take
+over any of these decisions per view. Registering `before_unload` also enables
+the prompt after an evaluation has initialized Ladybird’s script executor.
 
-Load scripts execute in the page's main world after a top-level load finishes.
-They are not isolated extensions or document-start scripts. Ladybird's engine event loop is polled
-without blocking every 8 ms; integrating its wakeups with the host is future work.
+TODO: persist IndexedDB transactions and verify records and non-exportable
+test keys across a restart. The pinned renderer currently holds them in memory.
+
+Document-start and after-load scripts share the page’s main world. Isolated
+extension worlds remain future work. The host polls Ladybird’s event loop
+every 8 ms.
 
 ## Scripting
 

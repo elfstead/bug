@@ -1,7 +1,7 @@
 // Generated from native/abi.toml by scripts/generate-abi. Edit the definition instead.
 use std::ffi::{c_char, c_int, c_void};
 
-pub(super) const ABI_VERSION: u32 = 3;
+pub(super) const ABI_VERSION: u32 = 4;
 
 pub(super) type BugEvent = unsafe extern "C" fn(*mut c_void, u32, u64, *const c_char, usize);
 
@@ -17,6 +17,8 @@ pub(crate) mod events {
     pub(crate) const EVALUATED: u32 = 9;
     pub(crate) const CLIPBOARD: u32 = 10;
     pub(crate) const FILE_PICKER: u32 = 11;
+    pub(crate) const REQUEST: u32 = 12;
+    pub(crate) const REQUEST_CANCELLED: u32 = 13;
 }
 
 pub(crate) mod actions {
@@ -32,13 +34,16 @@ pub(crate) mod actions {
     pub(crate) const COPY: u32 = 10;
     pub(crate) const CUT: u32 = 11;
     pub(crate) const PASTE: u32 = 12;
+    pub(crate) const DOCUMENT_START_SCRIPT: u32 = 13;
+    pub(crate) const SET_REQUEST_HANDLERS: u32 = 14;
 }
 
 pub(super) struct Symbols {
     pub(super) init: unsafe extern "C" fn(*const c_char, *const c_char, BugEvent, *mut c_void) -> c_int,
     pub(super) shutdown: unsafe extern "C" fn(),
     pub(super) pump: unsafe extern "C" fn(),
-    pub(super) open: unsafe extern "C" fn(*const c_char) -> u64,
+    pub(super) open: unsafe extern "C" fn(*const c_char, *const c_char) -> u64,
+    pub(super) reply_request: unsafe extern "C" fn(u64, u64, *const c_char, c_int, *const c_char, usize) -> c_int,
     pub(super) navigate: unsafe extern "C" fn(u64, *const c_char) -> c_int,
     pub(super) evaluate: unsafe extern "C" fn(u64, u64, *const c_char) -> c_int,
     pub(super) reply_file_picker: unsafe extern "C" fn(u64, u64, *const *const c_char, usize) -> c_int,
@@ -65,6 +70,7 @@ impl Symbols {
                 shutdown: super::load_symbol(library, c"bug_shutdown")?,
                 pump: super::load_symbol(library, c"bug_pump")?,
                 open: super::load_symbol(library, c"bug_open")?,
+                reply_request: super::load_symbol(library, c"bug_reply_request")?,
                 navigate: super::load_symbol(library, c"bug_navigate")?,
                 evaluate: super::load_symbol(library, c"bug_evaluate")?,
                 reply_file_picker: super::load_symbol(library, c"bug_reply_file_picker")?,

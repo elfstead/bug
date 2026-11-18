@@ -14,7 +14,7 @@ if [[ $(git -C "$bug_source" rev-parse HEAD) != "$bug_revision" ]]; then
     echo 'Ladybird revision differs from ladybird-revision; refusing to change your checkout.' >&2
     exit 1
 fi
-for bug_patch in "$bug_root/patches/frontend.patch" "$bug_root/patches/api.patch"; do
+for bug_patch in "$bug_root/patches/frontend.patch" "$bug_root/patches/api.patch" "$bug_root/patches/controller-hooks.patch"; do
 if git -C "$bug_source" apply --reverse --check "$bug_patch" 2>/dev/null; then
     : # Already applied.
 else

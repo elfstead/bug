@@ -35,6 +35,8 @@ pub struct SavedView {
     pub metadata: ViewMetadata,
     #[serde(default)]
     pub load_script: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub document_start_script: String,
 }
 
 /// Reopening instructions, not a serialized JS heap or OS window handle.
@@ -55,6 +57,7 @@ impl SessionSnapshot {
             view.metadata.validate()?;
             if view.url.contains('\0')
                 || view.load_script.contains('\0')
+                || view.document_start_script.contains('\0')
                 || !view.zoom.is_finite()
                 || !(0.25..=5.).contains(&view.zoom)
             {

@@ -31,6 +31,7 @@ BugEvent callback;
 void* callback_user;
 Core::AnonymousBuffer theme;
 HashMap<u64, u64> evaluation_views;
+u64 next_request;
 
 void emit(uint32_t kind, uint64_t id, StringView text = {})
 {
@@ -66,21 +67,24 @@ public:
                     [&](Web::HTML::FileFilter::MimeType const& mime) { accept.must_append(mime.value.to_utf8()); },
                     [&](Web::HTML::FileFilter::Extension const& ext) { accept.must_append(MUST(String::formatted(".{}", ext.value.to_utf8()))); });
             }
-            m_picker_request = ++m_picker_sequence;
+            m_picker_request = ++next_request;
             m_picker_multiple = multiple == Web::HTML::AllowMultipleFiles::Yes;
             JsonObject event;
             event.set("request"sv, m_picker_request);
             event.set("multiple"sv, m_picker_multiple);
             event.set("accept"sv, move(accept));
-            emit(BUG_FILE_PICKER, view_id(), event.serialized());
+            m_picker_delegated = handles("file_picker"sv);
+            if (m_picker_delegated)
+                event.set("kind"sv, "file_picker"sv);
+            emit(m_picker_delegated ? BUG_REQUEST : BUG_FILE_PICKER, view_id(), event.serialized());
         };
-        on_load_start = [this] { cancel_picker(); };
+        on_load_start = [this] { cancel_requests(); };
         on_ready_to_paint = [this] { emit(BUG_FRAME, view_id()); };
         on_title_change = [this](auto const& title) { emit(BUG_TITLE, view_id(), title.to_utf8()); };
         on_url_change = [this](auto const& url) { emit(BUG_URL, view_id(), url.serialize()); };
         on_load_finish = [this](auto const& url) { emit(BUG_LOADED, view_id(), url.serialize()); };
         on_close = [this] {
-            m_picker_request = 0;
+            forget_requests();
             auto id = view_id();
             // Destruction must not occur inside a renderer callback on this view.
             Core::EventLoop::current().deferred_invoke([id] {
@@ -97,31 +101,81 @@ public:
         };
         on_link_hover = [this](auto const& url) { emit(BUG_HOOK, view_id(), ByteString::formatted("link {}", url.serialize())); };
         on_web_content_crashed = [this](auto) {
-            m_picker_request = 0;
+            forget_requests();
             emit(BUG_ERROR, view_id(), "renderer crashed; reload to retry"sv);
         };
 
-        // Until a controller supplies dialog replies, settle requests rather than
-        // leaving the renderer blocked. Report each unsupported interaction.
         on_request_alert = [this](auto const& message) {
-            emit(BUG_HOOK, view_id(), ByteString::formatted("alert {}", message.to_utf8()));
-            alert_closed();
+            if (!handles("alert"sv)) {
+                emit(BUG_HOOK, view_id(), ByteString::formatted("alert {}", message.to_utf8()));
+                alert_closed();
+                return;
+            }
+            JsonObject data;
+            data.set("message"sv, message.to_utf8());
+            add_request("alert"sv, move(data), [this](int, StringView) { alert_closed(); });
         };
         on_request_confirm = [this](auto const& message) {
-            emit(BUG_HOOK, view_id(), ByteString::formatted("confirm-dismissed {}", message.to_utf8()));
-            confirm_closed(false);
+            if (!handles("confirm"sv)) {
+                emit(BUG_HOOK, view_id(), ByteString::formatted("confirm-dismissed {}", message.to_utf8()));
+                confirm_closed(false);
+                return;
+            }
+            JsonObject data;
+            data.set("message"sv, message.to_utf8());
+            add_request("confirm"sv, move(data), [this](int accept, StringView) { confirm_closed(accept); });
         };
-        on_request_prompt = [this](auto const& message, auto const&) {
-            emit(BUG_HOOK, view_id(), ByteString::formatted("prompt-dismissed {}", message.to_utf8()));
-            prompt_closed({});
+        on_request_prompt = [this](auto const& message, auto const& initial) {
+            if (!handles("prompt"sv)) {
+                emit(BUG_HOOK, view_id(), ByteString::formatted("prompt-dismissed {}", message.to_utf8()));
+                prompt_closed({});
+                return;
+            }
+            JsonObject data;
+            data.set("message"sv, message.to_utf8());
+            data.set("default"sv, initial.to_utf8());
+            add_request("prompt"sv, move(data), [this](int accept, StringView text) {
+                if (accept) prompt_closed(Utf16String::from_utf8(text));
+                else prompt_closed({});
+            });
         };
-        on_request_before_unload = [this](auto const&, auto done) {
-            emit(BUG_HOOK, view_id(), "before-unload-accepted"sv);
-            done(true);
+        on_request_before_unload = [this](auto const& source, auto done) {
+            if (!handles("before_unload"sv)) {
+                emit(BUG_HOOK, view_id(), "before-unload-accepted"sv);
+                done(true);
+                return;
+            }
+            JsonObject data;
+            data.set("source"sv, source);
+            add_request("before_unload"sv, move(data), [done = move(done)](int leave, StringView) { done(leave); });
         };
-        on_request_permission = [this](auto const&, auto done) {
-            emit(BUG_HOOK, view_id(), "permission-dismissed"sv);
-            done(Web::Permissions::PromptOutcome::Dismissed);
+        on_request_permission = [this](auto const& permission, auto done) {
+            using Outcome = Web::Permissions::PromptOutcome;
+            if (!handles("permission"sv)) {
+                emit(BUG_HOOK, view_id(), "permission-dismissed"sv);
+                done(Outcome::Dismissed);
+                return;
+            }
+            JsonObject data;
+            data.set("name"sv, Web::Permissions::to_string(permission.name));
+            data.set("origin"sv, permission.top_level_origin.serialize());
+            data.set("is_file"sv, permission.is_file);
+            data.set("system_denied"sv, permission.kind == WebView::PermissionPromptKind::SystemDeniedNotice);
+            data.set("show_os_hint"sv, permission.show_os_hint);
+            add_request("permission"sv, move(data), [done = move(done)](int answer, StringView) {
+                constexpr Outcome outcomes[] = { Outcome::Dismissed, Outcome::AllowOnce, Outcome::AllowAlways, Outcome::Block };
+                done(outcomes[answer]);
+            }, permission);
+        };
+        on_cancel_permission_prompt = [this](auto const& permission) {
+            for (auto const& [id, request] : m_requests) {
+                if (request.permission.has_value() && permission.is_same_request_as(*request.permission)) {
+                    auto cancelled = id;
+                    m_requests.remove(cancelled);
+                    notify_cancelled(cancelled);
+                    break;
+                }
+            }
         };
         initialize_tab(Web::HTML::VisibilityState::Visible, traversable);
         resize(800, 600, 1.0);
@@ -136,10 +190,91 @@ public:
         handle_resize();
     }
 
+    bool handles(StringView kind) const
+    {
+        return m_handlers.contains_slow(kind);
+    }
+
+    bool set_handlers(StringView json)
+    {
+        auto parsed = JsonValue::from_string(json);
+        if (parsed.is_error() || !parsed.value().is_array()) return false;
+        Vector<String> handlers;
+        for (auto const& entry : parsed.value().as_array().values()) {
+            if (!entry.is_string()) return false;
+            handlers.append(entry.as_string());
+        }
+        auto had_before_unload = handles("before_unload"sv);
+        m_handlers = move(handlers);
+        if (had_before_unload != handles("before_unload"sv))
+            set_controller_handles_before_unload(!had_before_unload);
+        cancel_requests(true);
+        return true;
+    }
+
+    void add_request(StringView kind, JsonObject data, Function<void(int, StringView)> complete,
+        Optional<WebView::PermissionPromptRequest> permission = {})
+    {
+        auto id = ++next_request;
+        m_requests.set(id, Pending { kind, move(complete), move(permission) });
+        data.set("kind"sv, kind);
+        data.set("request"sv, id);
+        emit(BUG_REQUEST, view_id(), data.serialized());
+    }
+
+    int reply(u64 id, StringView kind, int answer, StringView text)
+    {
+        auto it = m_requests.find(id);
+        if (it == m_requests.end()) return 0;
+        if (kind != it->value.kind || answer < 0 || answer > (kind == "permission"sv ? 3 : 1)) return -1;
+        if (it->value.permission.has_value()
+            && it->value.permission->kind == WebView::PermissionPromptKind::SystemDeniedNotice && answer != 0)
+            return -1;
+        auto pending = m_requests.take(id).release_value();
+        if (pending.permission.has_value())
+            did_show_permission_prompt(*pending.permission);
+        pending.complete(answer, text);
+        return 1;
+    }
+
+    bool has_modal_request() const
+    {
+        for (auto const& entry : m_requests) {
+            if (entry.value.kind != "permission"sv) return true;
+        }
+        return false;
+    }
+
+    void notify_cancelled(u64 request) { emit(BUG_REQUEST_CANCELLED, view_id(), ByteString::number(request)); }
+
+    void cancel_requests(bool removed_only = false)
+    {
+        if (!removed_only || (m_picker_delegated && !handles("file_picker"sv)))
+            cancel_picker();
+        auto ids = m_requests.keys();
+        for (auto id : ids) {
+            auto it = m_requests.find(id);
+            if (it == m_requests.end() || (removed_only && handles(it->value.kind))) continue;
+            auto pending = m_requests.take(id).release_value();
+            notify_cancelled(id);
+            pending.complete(pending.kind == "before_unload"sv, {});
+        }
+    }
+
+    void forget_requests()
+    {
+        for (auto const& entry : m_requests) notify_cancelled(entry.key);
+        m_requests.clear();
+        if (m_picker_request && m_picker_delegated) notify_cancelled(m_picker_request);
+        m_picker_request = 0;
+    }
+
     void cancel_picker()
     {
-        if (m_picker_request != 0)
+        if (m_picker_request != 0) {
+            if (m_picker_delegated) notify_cancelled(m_picker_request);
             reply_file_picker(m_picker_request, nullptr, 0);
+        }
     }
 
     int reply_file_picker(u64 request, char const* const* paths, size_t count)
@@ -190,7 +325,14 @@ private:
     Gfx::IntPoint to_content_position(Gfx::IntPoint p) const override { return p; }
     Gfx::IntPoint to_widget_position(Gfx::IntPoint p) const override { return p; }
     ViewImplementation* create_view_for_new_tab_or_window(WebView::IsPrivate is_private) override { return &new_view({}, is_private); }
-    u64 m_picker_sequence { 0 };
+    struct Pending {
+        StringView kind; // Static request kind.
+        Function<void(int, StringView)> complete;
+        Optional<WebView::PermissionPromptRequest> permission;
+    };
+    Vector<String> m_handlers;
+    HashMap<u64, Pending> m_requests;
+    bool m_picker_delegated { false };
     u64 m_picker_request { 0 };
     bool m_picker_multiple { false };
     Web::DevicePixelSize m_size { 800, 600 };
@@ -222,8 +364,19 @@ public:
         if (response.is_error()) {
             JsonObject error;
             error.set("type"sv, "error"sv);
-            error.set("name"sv, response.error().error);
+            if (response.error().error == "no such window"sv)
+                error.set("name"sv, "Cancelled"sv);
+            else
+                error.set("name"sv, response.error().error);
             error.set("message"sv, response.error().message);
+            result.set("result"sv, move(error));
+        } else if (response.value().is_null()) {
+            // Classic WebDriver ends the evaluation when a modal opens. The page
+            // resumes after the controller replies, independently of this result.
+            JsonObject error;
+            error.set("type"sv, "error"sv);
+            error.set("name"sv, "UserPromptOpened"sv);
+            error.set("message"sv, "evaluation interrupted by a modal dialog"sv);
             result.set("result"sv, move(error));
         } else {
             result.set("result"sv, response.release_value());
@@ -305,14 +458,17 @@ void bug_pump()
         Core::EventLoop::current().pump(Core::EventLoop::WaitMode::PollForEvents);
 }
 
-uint64_t bug_open(char const* url)
+uint64_t bug_open(char const* url, char const* document_start_script)
 {
-    if (!application || !url)
+    if (!application || !url || !document_start_script)
         return 0;
     auto parsed_url = WebView::sanitize_url(StringView(url, strlen(url)), WebView::Application::settings().search_engine_settings().engine);
     if (!parsed_url.has_value())
         return 0;
+    auto script = String::from_utf8(StringView(document_start_script, strlen(document_start_script)));
+    if (script.is_error()) return 0;
     auto& view = new_view();
+    if (!script.value().is_empty()) view.set_document_start_script(script.release_value());
     view.load(*parsed_url);
     return view.view_id();
 }
@@ -325,7 +481,7 @@ int bug_navigate(uint64_t id, char const* url)
     auto parsed_url = WebView::sanitize_url(StringView(url, strlen(url)), WebView::Application::settings().search_engine_settings().engine);
     if (!parsed_url.has_value())
         return 0;
-    view->cancel_picker();
+    view->cancel_requests();
     view->load(*parsed_url);
     return 1;
 }
@@ -336,27 +492,43 @@ int bug_reply_file_picker(uint64_t view, uint64_t request, char const* const* pa
     return target ? target->reply_file_picker(request, paths, count) : 0;
 }
 
+int bug_reply_request(uint64_t view, uint64_t request, char const* kind, int answer, char const* text, size_t length)
+{
+    auto* target = lookup(view);
+    if (!target || !kind || !text) return 0;
+    return target->reply(request, StringView(kind, strlen(kind)), answer, StringView(text, length));
+}
+
 int bug_action(uint64_t id, uint32_t action, char const* text, double number)
 {
     auto* view = lookup(id);
     if (!view)
         return 0;
     switch (action) {
+    case BUG_SET_REQUEST_HANDLERS:
+        return text && view->set_handlers(StringView(text, strlen(text)));
+    case BUG_DOCUMENT_START_SCRIPT: {
+        if (!text) return 0;
+        auto script = String::from_utf8(StringView(text, strlen(text)));
+        if (script.is_error()) return 0;
+        view->set_document_start_script(script.release_value());
+        break;
+    }
     case BUG_BACK:
-        view->cancel_picker();
+        view->cancel_requests();
         view->traverse_the_history_by_delta(-1);
         break;
     case BUG_FORWARD:
-        view->cancel_picker();
+        view->cancel_requests();
         view->traverse_the_history_by_delta(1);
         break;
     case BUG_RELOAD:
-        view->cancel_picker();
+        view->cancel_requests();
         view->reload();
         break;
     case BUG_STOP: view->stop_loading(); break;
     case BUG_CLOSE:
-        view->cancel_picker();
+        view->cancel_requests();
         view->request_close();
         break;
     case BUG_EVAL: {
@@ -397,6 +569,8 @@ int bug_evaluate(uint64_t id, uint64_t request, char const* body)
 {
     auto* view = lookup(id);
     if (!view || !body || !request || evaluation_views.contains(request)) return 0;
+    // WebDriver would otherwise try to dismiss the controller's dialog before evaluation.
+    if (view->has_modal_request()) return -1;
     auto script = String::from_utf8(StringView(body, strlen(body)));
     if (script.is_error()) return 0;
     JsonObject payload;

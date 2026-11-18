@@ -57,6 +57,131 @@ class Client:
         self.log.close()
         return diagnostics
 
+def check_document_start(c, tmp):
+    # A hook registered with open must precede the very first inline script.
+    early = Path(tmp) / 'early.html'
+    early.write_text("""<!doctype html><script>
+        window.first = window.hookCount || 0;
+        window.frameResult = new Promise(resolve => window.addEventListener('message', e => resolve(e.data), {once:true}));
+        </script><iframe srcdoc="<script>parent.postMessage(window.hookCount || 0, '*')</script>"></iframe>""")
+    hook = 'window.hookCount = (window.hookCount || 0) + 1'
+    c.send({'cmd':'open','url':early.as_uri(),'document_start_script':hook})
+    hooked = c.wait(lambda e:e['event']=='opened')['view']
+    c.wait(lambda e:e['event']=='loaded' and e['view']==hooked)
+    assert c.eval(hooked, 'Promise.all([first, frameResult])')['value'] == [1, 0]
+    c.send({'cmd':'set_document_start_script','view':hooked,'script':''})
+    c.send({'cmd':'reload','view':hooked})
+    c.wait(lambda e:e['event']=='loaded' and e['view']==hooked)
+    assert c.eval(hooked, 'first')['value'] == 0
+    c.send({'cmd':'close','view':hooked})
+    c.wait(lambda e:e['event']=='closed' and e['view']==hooked)
+
+def check_native_input(c, view):
+    c.eval(view, """const f = document.querySelector('input'); f.value=''; f.focus();
+        window.typed = new Promise(resolve => f.addEventListener('input',()=>resolve([f.value,window.trusted]),{once:true}));
+        f.addEventListener('keydown',e=>window.trusted=e.isTrusted,{once:true});
+        document.body.style.height='5000px'; true""")
+    for pressed in (True,False):
+        c.send({'cmd':'key','view':view,'name':'X','pressed':pressed,'codepoint':120})
+    assert c.eval(view, 'window.typed')['value']==['x',True]
+    c.eval(view, "window.scrolled = new Promise(resolve=>addEventListener('scroll',()=>resolve(scrollY),{once:true}));true")
+    c.send({'cmd':'mouse','view':view,'kind':'wheel','x':100,'y':100,'dy':160})
+    assert c.eval(view,'window.scrolled')['value']>0
+    c.eval(view,'scrollTo(0,0)')
+
+def check_request_replies(c, view, setup, upload):
+    c.send({'cmd':'set_request_handlers','view':view,'kinds':['alert','confirm','prompt','file_picker','permission','before_unload']})
+    for kind, expression, payload, expected in (
+        ('alert',"(alert('notice'), 'ok')", {}, 'ok'),
+        ('confirm',"confirm('proceed?')", {'accept':True}, True),
+        ('prompt',"prompt('label','initial')", {'text':'typed\0text'}, 'typed\0text'),
+        ('prompt',"prompt('label','initial')", {'text':''}, ''),
+        ('prompt',"prompt('label','initial')", {'text':None}, None),
+    ):
+        button_script = "const b=document.querySelector('button'); b.style='position:fixed;left:0;top:0'; b.onclick=()=>{window.callbackValue=("+expression+");document.title='answered '+Math.random()};true"
+        assert c.eval(view,button_script)['value']
+        c.send({'cmd':'click','view':view,'x':16,'y':10})
+        req=c.wait(lambda e:e['event']=='request' and e['kind']==kind)
+        assert req['view']==view
+        if kind=='prompt': assert req['default']=='initial'
+        if kind=='confirm':
+            c.send({'cmd':'reply_request','view':view,'request':req['request'],'reply':{'kind':'prompt','text':'wrong'}})
+            c.wait(lambda e:e['event']=='error',allow_error=True)
+        response={'cmd':'reply_request','view':view,'request':req['request'],'reply':{'kind':kind,**payload}}
+        c.send(response)
+        c.wait(lambda e:e['event']=='title' and e['title'].startswith('answered '))
+        assert c.eval(view,'window.callbackValue')=={'type':'json','value':expected}
+        c.send(response)
+        c.wait(lambda e:e['event']=='error',allow_error=True)
+    c.send({'cmd':'eval','view':view,'script':"confirm('will disconnect handler')"})
+    req=c.wait(lambda e:e['event']=='request')
+    assert c.wait(lambda e:e['event']=='evaluated')['result']['name']=='UserPromptOpened'
+    c.send({'cmd':'set_request_handlers','view':view,'kinds':['file_picker']})
+    assert c.wait(lambda e:e['event']=='request_cancelled')['request']==req['request']
+    assert c.eval(view,setup)['value']
+    c.send({'cmd':'click','view':view,'x':20,'y':10})
+    req=c.wait(lambda e:e['event']=='request' and e['kind']=='file_picker')
+    assert req['accept']==['.txt']
+    c.send({'cmd':'reply_request','view':view,'request':req['request'],'reply':{'kind':'file_picker','paths':[str(upload)]}})
+    assert c.eval(view,"document.querySelector('#upload').files[0].text()")['value']=='picked by the controller'
+    c.eval(view,"document.getElementById('upload').remove()")
+    c.eval(view, "document.querySelector('input').value=''")
+
+def check_navigation_callbacks(c):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html; charset=utf-8')
+            self.end_headers()
+            self.wfile.write(b"""<!doctype html><script>window.first=window.early;</script>
+                <button style="position:fixed;top:0;left:0"
+                onclick="Notification.requestPermission().then(value=>document.title=value)">Ask</button>""")
+
+        def log_message(self, *args):
+            pass
+
+    with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        origin = f'http://127.0.0.1:{server.server_port}'
+        try:
+            c.send({'cmd':'open', 'url':'about:blank', 'document_start_script':'window.early=23'})
+            view = c.wait(lambda e:e['event']=='opened')['view']
+            c.send({'cmd':'set_request_handlers', 'view':view, 'kinds':['permission','before_unload']})
+            c.send({'cmd':'navigate', 'view':view, 'url':origin+'/'})
+            c.wait(lambda e:e['event']=='loaded' and e.get('url')==origin+'/')
+            assert c.eval(view, 'first')['value']==23
+            c.send({'cmd':'subscribe','events':['loaded','title']})
+            c.wait(lambda e:e['event']=='subscribed')
+            c.send({'cmd':'set_metadata','view':view,'metadata':{'tags':['filtered']}})
+            start=len(c.history)
+            c.send({'cmd':'click','view':view,'x':15,'y':10})
+            prompt=c.wait(lambda e:e['event']=='request' and e['kind']=='permission')
+            assert prompt['name']=='notifications' and prompt['origin']==origin, prompt
+            assert all(e['event']!='metadata' for e in c.history[start:])
+            c.send({'cmd':'reply_request','view':view,'request':prompt['request'],
+                    'reply':{'kind':'permission','decision':'block'}})
+            c.wait(lambda e:e['event']=='title' and e['title']=='denied')
+            c.eval(view,"onbeforeunload=e=>{e.preventDefault();e.returnValue='stay'};true")
+            for leave in (False, True):
+                c.send({'cmd':'navigate','view':view,'url':origin+'/next'})
+                pending=c.wait(lambda e:e['event']=='request' and e['kind']=='before_unload')
+                c.send({'cmd':'reply_request','view':view,'request':pending['request'],
+                        'reply':{'kind':'before_unload','leave':leave}})
+                if not leave:
+                    assert c.eval(view,'location.pathname')['value']=='/'
+            c.wait(lambda e:e['event']=='loaded' and e.get('url')==origin+'/next')
+            assert c.eval(view,'first')['value']==23
+            c.send({'cmd':'subscribe','events':None})
+            c.wait(lambda e:e['event']=='subscribed')
+            c.send({'cmd':'close','view':view})
+            c.wait(lambda e:e['event']=='closed' and e['view']==view)
+        finally:
+            server.shutdown()
+            thread.join()
+
 with tempfile.TemporaryDirectory(prefix='bug-features-') as tmp:
     clients = []
     try:
@@ -86,6 +211,10 @@ with tempfile.TemporaryDirectory(prefix='bug-features-') as tmp:
         c.send({'cmd':'reply_file_picker','view':view,'request':picker['request'],'paths':[str(upload)]})
         c.wait(lambda e:e['event']=='title' and e['title']=='picked by the controller')
         c.eval(view, "document.getElementById('upload').remove()")
+        check_document_start(c, tmp)
+        check_native_input(c, view)
+        check_request_replies(c, view, setup, upload)
+        check_navigation_callbacks(c)
         # Correlate concurrent requests; the slower first script must not be lost.
         for script in ["new Promise(r=>setTimeout(()=>r('first'),50))", "'second'"]:
             c.send({'cmd':'eval','view':view,'script':script})
@@ -109,6 +238,7 @@ with tempfile.TemporaryDirectory(prefix='bug-features-') as tmp:
         assert c.wait(lambda e:e['event']=='found')['view']==view
         c.send({'cmd':'resize','view':view,'width':900,'height':700})
         c.send({'cmd':'zoom','view':view,'factor':1.25})
+        c.send({'cmd':'set_document_start_script','view':view,'script':'window.startRestored=17'})
         c.send({'cmd':'set_load_script','view':view,'script':"document.title='restored hook'"})
         c.send({'cmd':'snapshot'})
         snapshot = c.wait(lambda e:e['event']=='session')['session']
@@ -142,8 +272,17 @@ with tempfile.TemporaryDirectory(prefix='bug-features-') as tmp:
         assert len(views)==1 and views[0]['metadata']==metadata and views[0]['zoom']==1.25
         assert views[0]['viewport']==snapshot['views'][0]['viewport']
         assert restored.eval(views[0]['view'], 'document.title') == {'type':'json','value':'restored hook'}
-        restored.stop()
-        print('PASS: headless file upload, eval values/promises/errors/correlation/cancellation, Unicode copy/cut/paste, named metadata, snapshot validation, save and fresh-process restore')
+        assert restored.eval(views[0]['view'], 'window.startRestored')['value']==17
+        # Closing the command pipe must release a waiting page while the host stays up.
+        restored_view=views[0]['view']
+        restored.send({'cmd':'set_request_handlers','view':restored_view,'kinds':['confirm']})
+        restored.send({'cmd':'eval','view':restored_view,'script':"document.title='fallback '+confirm('stdin closed')"})
+        waiting=restored.wait(lambda e:e['event']=='request' and e['kind']=='confirm')
+        restored.child.stdin.close()
+        assert restored.wait(lambda e:e['event']=='request_cancelled')['request']==waiting['request']
+        restored.wait(lambda e:e['event']=='title' and e['title']=='fallback false')
+        assert restored.child.poll() is None
+        print('PASS: native input, controller requests and replies, document-start and load scripts, file upload, evaluation, clipboard, metadata and session restore')
     except BaseException:
         for c in clients:
             c.log.flush(); c.log.seek(0); print(c.log.read()); print(c.history[-20:])

@@ -11,6 +11,8 @@ mod browser;
 pub mod clients;
 mod engine;
 mod evaluation;
+mod request;
+pub use request::{BrowserRequest, PermissionAnswer, RequestDetails, RequestKind, RequestReply};
 pub mod protocol;
 mod session;
 pub use browser::*;

@@ -10,6 +10,52 @@ use std::io::{BufRead, Read, Write};
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Select unsolicited notifications for the JSON stream. Null restores all.
+    Subscribe {
+        events: Option<Vec<Notification>>,
+    },
+    Key {
+        view: u64,
+        pressed: bool,
+        name: String,
+        #[serde(default)]
+        codepoint: u32,
+        #[serde(default)]
+        modifiers: u32,
+        #[serde(default)]
+        repeat: bool,
+    },
+    Mouse {
+        view: u64,
+        kind: MouseKind,
+        x: i32,
+        y: i32,
+        #[serde(default)]
+        button: u32,
+        #[serde(default)]
+        buttons: u32,
+        #[serde(default)]
+        modifiers: u32,
+        #[serde(default)]
+        dx: f64,
+        #[serde(default)]
+        dy: f64,
+        #[serde(default)]
+        clicks: u32,
+    },
+    SetRequestHandlers {
+        view: u64,
+        kinds: Vec<crate::RequestKind>,
+    },
+    ReplyRequest {
+        view: u64,
+        request: u64,
+        reply: crate::RequestReply,
+    },
+    SetDocumentStartScript {
+        view: u64,
+        script: String,
+    },
     Click {
         view: u64,
         x: i32,
@@ -49,6 +95,8 @@ pub enum Command {
     },
     Open {
         url: String,
+        #[serde(default)]
+        document_start_script: String,
     },
     Navigate {
         view: u64,
@@ -99,6 +147,17 @@ pub enum Command {
     List {},
     Quit {},
 }
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+#[repr(u32)]
+pub enum MouseKind {
+    Move = 0,
+    Down = 1,
+    Up = 2,
+    Wheel = 3,
+    Leave = 4,
+}
+
 fn default_scale() -> f64 {
     1.0
 }
@@ -107,7 +166,7 @@ impl Command {
     pub fn parse(line: &str) -> Result<Self, String> {
         let command: Self = serde_json::from_str(line).map_err(|e| e.to_string())?;
         match &command {
-            Self::Open { url } | Self::Navigate { url, .. } if url.contains('\0') => {
+            Self::Open { url, .. } | Self::Navigate { url, .. } if url.contains('\0') => {
                 return Err("URL contains a NUL byte".into());
             }
             Self::Zoom { factor, .. } if !factor.is_finite() || !(0.25..=5.0).contains(factor) => {
@@ -121,6 +180,9 @@ impl Command {
     /// Adapt a wire command to the library API. No window system is involved.
     pub fn execute(self, browser: &mut Browser) -> Result<(Control, Option<Event>), String> {
         match self {
+            Self::Subscribe { events } => {
+                return Ok((Control::Continue, Some(Event::Subscribed { events })));
+            }
             Self::SetMetadata { view, metadata } => browser.set_metadata(view, metadata)?,
             Self::Find { name } => {
                 return Ok((
@@ -163,6 +225,63 @@ impl Command {
                     }),
                 ));
             }
+            Self::Key {
+                view,
+                pressed,
+                name,
+                codepoint,
+                modifiers,
+                repeat,
+            } => browser.key(
+                view,
+                crate::KeyInput {
+                    pressed,
+                    name: &name,
+                    codepoint,
+                    modifiers,
+                    repeat,
+                },
+            )?,
+            Self::Mouse {
+                view,
+                kind,
+                x,
+                y,
+                button,
+                buttons,
+                modifiers,
+                dx,
+                dy,
+                clicks,
+            } => browser.mouse(
+                view,
+                crate::MouseInput {
+                    kind: kind as u32,
+                    x,
+                    y,
+                    button,
+                    buttons,
+                    modifiers,
+                    dx,
+                    dy,
+                    clicks,
+                },
+            )?,
+            Self::SetRequestHandlers { view, kinds } => {
+                browser.set_request_handlers(view, &kinds)?
+            }
+            Self::ReplyRequest {
+                view,
+                request,
+                reply,
+            } => {
+                if !browser.reply_request(view, request, reply)? {
+                    return Err("request is no longer pending".into());
+                }
+            }
+            Self::SetDocumentStartScript { view, script } => {
+                browser.set_document_start_script(view, &script)?
+            }
             Self::Click { view, x, y } => browser.click(view, x, y)?,
             Self::ReplyFilePicker {
                 view,
@@ -176,8 +295,11 @@ impl Command {
             Self::Copy { view } => browser.copy(view)?,
             Self::Cut { view } => browser.cut(view)?,
             Self::Paste { view, text } => browser.paste(view, &text)?,
-            Self::Open { url } => {
-                browser.open(&url)?;
+            Self::Open {
+                url,
+                document_start_script,
+            } => {
+                browser.open_with_document_start_script(&url, &document_start_script)?;
             }
             Self::Navigate { view, url } => browser.navigate(view, &url)?,
             Self::Back { view } => browser.back(view)?,
@@ -263,6 +385,18 @@ pub struct ViewInfo {
 #[derive(Debug, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
+    Subscribed {
+        events: Option<Vec<Notification>>,
+    },
+    Request {
+        view: u64,
+        #[serde(flatten)]
+        callback: crate::BrowserRequest,
+    },
+    RequestCancelled {
+        view: u64,
+        request: u64,
+    },
     FilePickerRequested {
         view: u64,
         #[serde(flatten)]
@@ -349,6 +483,14 @@ pub enum Event {
 impl Event {
     pub fn from_browser(event: &BrowserEvent) -> Option<Self> {
         Some(match event {
+            BrowserEvent::Request { view, callback } => Self::Request {
+                view: *view,
+                callback: callback.clone(),
+            },
+            BrowserEvent::RequestCancelled { view, request } => Self::RequestCancelled {
+                view: *view,
+                request: *request,
+            },
             BrowserEvent::FilePickerRequested { view, picker } => Self::FilePickerRequested {
                 view: *view,
                 picker: picker.clone(),
@@ -401,11 +543,46 @@ impl Event {
     }
 }
 
+/// Notifications that can be filtered independently of replies and pending requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Notification {
+    Opened,
+    Closed,
+    Focused,
+    Url,
+    Title,
+    Loaded,
+    Metadata,
+    Clipboard,
+    Resized,
+    Hook,
+}
+impl Event {
+    fn notification(&self) -> Option<Notification> {
+        Some(match self {
+            Self::Opened { .. } => Notification::Opened,
+            Self::Closed { .. } => Notification::Closed,
+            Self::Focused { .. } => Notification::Focused,
+            Self::Url { .. } => Notification::Url,
+            Self::Title { .. } => Notification::Title,
+            Self::Loaded { .. } => Notification::Loaded,
+            Self::Metadata { .. } => Notification::Metadata,
+            Self::Clipboard { .. } => Notification::Clipboard,
+            Self::Resized { .. } => Notification::Resized,
+            Self::Hook { .. } => Notification::Hook,
+            _ => return None,
+        })
+    }
+}
+
 /// JSON is an adapter, not the Browser API. Input is read off-thread; all
 /// browser operations remain on the client's initializing thread.
 pub struct JsonController<W> {
     incoming: std::sync::mpsc::Receiver<Result<Command, String>>,
     output: W,
+    notifications: Option<Vec<Notification>>,
+    delegated_views: std::collections::HashSet<u64>,
 }
 impl<W: Write> JsonController<W> {
     pub fn new<R: BufRead + Send + 'static>(mut input: R, output: W) -> Self {
@@ -433,7 +610,12 @@ impl<W: Write> JsonController<W> {
                 }
             }
         });
-        Self { incoming, output }
+        Self {
+            incoming,
+            output,
+            notifications: None,
+            delegated_views: Default::default(),
+        }
     }
     fn emit(&mut self, event: Event) {
         if serde_json::to_writer(&mut self.output, &event).is_ok() {
@@ -449,12 +631,34 @@ impl<W: Write> Controller for JsonController<W> {
     fn update(&mut self, browser: &mut Browser) -> Result<Control, String> {
         // Bound each turn so a busy pipe cannot starve rendering or input.
         for _ in 0..64 {
-            let Ok(command) = self.incoming.try_recv() else {
-                break;
+            let command = match self.incoming.try_recv() {
+                Ok(command) => command,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    for view in self.delegated_views.drain() {
+                        // A native close may already have removed this view.
+                        let _ = browser.set_request_handlers(view, &[]);
+                    }
+                    break;
+                }
+            };
+            let registration = match &command {
+                Ok(Command::SetRequestHandlers { view, kinds }) => Some((*view, !kinds.is_empty())),
+                _ => None,
             };
             match command.and_then(|command| command.execute(browser)) {
                 Ok((control, event)) => {
+                    if let Some((view, delegated)) = registration {
+                        if delegated {
+                            self.delegated_views.insert(view);
+                        } else {
+                            self.delegated_views.remove(&view);
+                        }
+                    }
                     if let Some(event) = event {
+                        if let Event::Subscribed { events } = &event {
+                            self.notifications.clone_from(events);
+                        }
                         self.emit(event);
                     }
                     if control == Control::Quit {
@@ -467,7 +671,12 @@ impl<W: Write> Controller for JsonController<W> {
         Ok(Control::Continue)
     }
     fn event(&mut self, event: &BrowserEvent) {
-        if let Some(event) = Event::from_browser(event) {
+        if let BrowserEvent::Closed { view } = event {
+            self.delegated_views.remove(view);
+        }
+        if let Some(event) = Event::from_browser(event)
+            && !matches!((&self.notifications, event.notification()), (Some(allowed), Some(kind)) if !allowed.contains(&kind))
+        {
             self.emit(event);
         }
     }
