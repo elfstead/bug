@@ -8,16 +8,17 @@ license = "BSD-2-Clause"
 
 [features]
 default = ["windowed"]
-windowed = ["dep:winit", "dep:softbuffer", "dep:font8x8", "dep:arboard", "dep:smithay-clipboard", "dep:rfd", "dep:mime_guess"]
+windowed = ["dep:winit", "dep:softbuffer", "dep:cosmic-text", "dep:arboard", "dep:smithay-clipboard", "dep:rfd", "dep:mime_guess"]
 
 [dependencies]
+rustix = { version = "1", features = ["process"] }
 libloading = "0.9.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 mime_guess = { version = "2", optional = true }
 rfd = { version = "0.18", optional = true }
 softbuffer = { version = "0.4", optional = true }
-font8x8 = { version = "0.3", optional = true }
+cosmic-text = { version = "0.19", optional = true }
 arboard = { version = "3.7", default-features = false, optional = true }
 winit = { version = "0.30", optional = true, default-features = false, features = ["rwh_06", "wayland", "wayland-dlopen", "x11"] }
 

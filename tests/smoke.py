@@ -18,10 +18,17 @@ def main():
         env = os.environ.copy()
         env.pop("WAYLAND_DISPLAY", None)
         env["XDG_SESSION_TYPE"] = "x11"
-        child = subprocess.Popen([
-            os.environ.get("BUG_TEST_BINARY", str(root / "target/debug/bug")), "--profile", str(Path(tmp) / "profile"),
-            (root / "examples/smoke.html").as_uri(),
-        ], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, text=True, env=env)
+        binary = Path(os.environ.get("BUG_TEST_BINARY", root / "target/debug/bug")).resolve()
+        helper = binary.with_name('wmenu-open') if 'BUG_TEST_BINARY' in env else root / 'examples/wmenu-open'
+        # Provide the chooser's answer without driving a physical Wayland seat on Xvfb.
+        menu = Path(tmp) / 'wmenu'
+        menu.write_text('#!/bin/sh\nprintf "%s\\n" "$BUG_TEST_LAUNCH_URL"\n')
+        menu.chmod(0o755)
+        env.update(PATH=os.pathsep.join((tmp, str(binary.parent), env['PATH'])),
+                   XDG_DATA_HOME=str(Path(tmp) / 'data'),
+                   BUG_TEST_LAUNCH_URL=(root / 'examples/smoke.html').as_uri())
+        child = subprocess.Popen([helper], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=log, text=True, env=env)
         events = queue.Queue()
         observed = []
         def read():
@@ -54,6 +61,11 @@ def main():
             # A real native window, with no browser bars, is present on the X server.
             windows = subprocess.check_output(["xdotool", "search", "--name", "Bug renderer smoke test"], env=env, text=True).split()
             assert windows, "no rendered-page window"
+
+            subprocess.run([helper], env={**env, 'BUG_TEST_LAUNCH_URL':'about:blank'}, check=True, timeout=15)
+            forwarded = wait(lambda e: e['event']=='opened' and e['view'] != view)['view']
+            send({'cmd':'close', 'view':forwarded})
+            wait(lambda e: e['event']=='closed' and e['view']==forwarded)
 
             send({"cmd":"eval", "view":view, "script":"document.title = 'Bug FFI OK'"})
             wait(lambda e: e["event"] == "title" and e["title"] == "Bug FFI OK")
@@ -118,6 +130,18 @@ def main():
             key('ctrl+v')
             key('Return')
             wait(lambda e: e["event"] == "title" and e["title"] == "Bug load hook OK")
+
+            palette()
+            type_text('eval')
+            key('Return')
+            type_text('document.title')
+            key('Return')
+            wait(lambda e:e['event']=='evaluated' and e['result'].get('value')=='Bug load hook OK')
+            key('ctrl+c')
+            assert subprocess.check_output(['xclip','-selection','clipboard','-o'], env=env, text=True)=='Bug load hook OK'
+            key('Escape')
+            key('Escape')
+            wait(lambda e:e['event']=='hook' and e.get('kind')=='palette' and e['data']=='closed')
 
             palette()
             type_text('new window')

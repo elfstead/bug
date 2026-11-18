@@ -116,6 +116,33 @@ def licenses(destination, sources, triplet):
             copy(Path('/usr/share/doc') / owner / 'copyright', base / 'system' / owner / 'copyright')
 
 
+def install_cli_files(destination):
+    copy(ROOT / 'examples/wmenu-open', destination / 'bin/wmenu-open')
+    copy(ROOT / 'README.md', destination / 'README.md')
+    copy(ROOT / 'LICENSE', destination / 'LICENSE')
+    # Fontconfig's vcpkg install prefix won't exist on the recipient's machine.
+    (destination / 'fonts.conf').write_text('''<?xml version="1.0"?>
+<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
+<fontconfig><dir>/usr/share/fonts</dir><dir>/usr/local/share/fonts</dir>
+<dir>/System/Library/Fonts</dir><dir>/Library/Fonts</dir><dir>~/Library/Fonts</dir>
+<dir prefix="xdg">fonts</dir><cachedir prefix="xdg">fontconfig</cachedir></fontconfig>
+''')
+    launcher = destination / 'bin/bug'
+    launcher.write_text('''#!/bin/sh
+bug_prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -z "${FONTCONFIG_FILE:-}" ]; then
+    if [ -f /etc/fonts/fonts.conf ]; then
+        FONTCONFIG_FILE=/etc/fonts/fonts.conf
+    else
+        FONTCONFIG_FILE="$bug_prefix/fonts.conf"
+    fi
+    export FONTCONFIG_FILE
+fi
+exec "$bug_prefix/bin/bug-host" "$@"
+''')
+    launcher.chmod(0o755)
+
+
 def package(target):
     info = build_info()
     mac = target == 'macos-arm64'
@@ -185,29 +212,7 @@ def package(target):
             run('patchelf', '--set-rpath', '$ORIGIN' if output.parent == libraries else '$ORIGIN/../lib', output)
     resource_path = Path('Resources' if mac else 'share/Lagom')
     shutil.copytree(ENGINE / resource_path, destination / resource_path, symlinks=False)
-    copy(ROOT / 'README.md', destination / 'README.md')
-    copy(ROOT / 'LICENSE', destination / 'LICENSE')
-    # Fontconfig's vcpkg install prefix won't exist on the recipient's machine.
-    (destination / 'fonts.conf').write_text('''<?xml version="1.0"?>
-<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">
-<fontconfig><dir>/usr/share/fonts</dir><dir>/usr/local/share/fonts</dir>
-<dir>/System/Library/Fonts</dir><dir>/Library/Fonts</dir><dir>~/Library/Fonts</dir>
-<dir prefix="xdg">fonts</dir><cachedir prefix="xdg">fontconfig</cachedir></fontconfig>
-''')
-    launcher = destination / 'bin/bug'
-    launcher.write_text('''#!/bin/sh
-bug_prefix=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-if [ -z "${FONTCONFIG_FILE:-}" ]; then
-    if [ -f /etc/fonts/fonts.conf ]; then
-        FONTCONFIG_FILE=/etc/fonts/fonts.conf
-    else
-        FONTCONFIG_FILE="$bug_prefix/fonts.conf"
-    fi
-    export FONTCONFIG_FILE
-fi
-exec "$bug_prefix/bin/bug-host" "$@"
-''')
-    launcher.chmod(0o755)
+    install_cli_files(destination)
     if mac:
         for output in sources:
             args = ['codesign', '--force', '--sign', '-']

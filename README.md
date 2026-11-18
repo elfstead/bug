@@ -8,6 +8,45 @@ navigation and interaction. No tabs, address bar, toolbar, or Qt. Ctrl+Shift+P
 opens a transient command palette in the windowed client.
 macOS also accepts Command+Shift+P and Command+C/X/V for text clipboard actions.
 
+## Start here
+
+Extract a [release](https://github.com/elfstead/bug/releases), put its `bin/` directory on
+your PATH, and open a URL. The first invocation hosts the browser. Subsequent
+invocations open windows in that profile.
+
+```sh
+bug https://example.org >/dev/null
+```
+
+Once the window opens, use a second shell to create and address a specific view.
+
+```sh
+view=$(bug open --wait https://example.org)
+bug eval --view "$view" 'document.title'
+bug views --json
+```
+
+With wmenu installed, add this to your Sway config. Both executables must be on
+Sway's PATH. The shipped helper prompts for a URL and works on the first launch
+and on later ones.
+
+```sway
+bindsym $mod+g exec wmenu-open
+```
+
+`bug help` lists interactive actions. `bug help eval` explains input, output and
+target selection. Commands such as `bug open`, `bug views` and `bug eval` require a
+running host and exit 1 with a diagnostic if the command fails. `bug open` returns
+a new view ID as soon as it exists. `--wait` waits for its first top-level load.
+`bug watch` streams view notifications as JSON lines. `bug eval --focused` targets
+the focused page. Use `--last-focused` after switching to a terminal or launcher.
+Headless hosts acquire logical focus via the `focus` JSON command. Use `--view ID`
+for automation that must keep targeting the same page.
+
+Put `--profile DIR` before a command to select an instance. A user-private Unix
+socket connects CLI invocations to that profile's host. `bug socket` prints its
+path. The Rust API continues calling Ladybird directly.
+
 ## Architecture
 
 ```text
@@ -196,14 +235,12 @@ bug = { path = "/home/elf/dev/bug", default-features = false }
 
 Press **Ctrl+Shift+P** (or **Command+Shift+P** on macOS), type to filter, then press Enter. Up/Down selects a result;
 Esc goes back or closes the palette, and Ctrl+U clears its input. Commands cover
-navigation, new window, history, reload, stop, close, zoom, and quit. Navigate and
+navigation, new window, history, reload, stop, close, zoom, JavaScript evaluation, listing views, and quit. Navigate and
 New window prompt for a URL. Results can also be clicked.
 
 The window client draws the palette over the page and calls `Browser` directly.
 It does not modify the page DOM, and palette keyboard/pointer input is consumed
-by the client. The rest of the time, keys go to the page. This initial palette
-uses a bitmap font; unsupported display glyphs appear as `?`, while the entered
-text is retained. Ctrl+V pastes into the palette; Ctrl+C/X copies/cuts its whole
+by the client. The rest of the time, keys go to the page. The palette shapes text using installed fonts and glyph fallback. Ctrl+V pastes into the palette; Ctrl+C/X copies/cuts its whole
 input. IME composition is still pending.
 On macOS, Command+V and Command+C/X perform the same palette operations.
 
@@ -467,22 +504,34 @@ a `views` event containing IDs, titles, and URLs. Events include `ready`, `opene
 `error`. Native hooks carry engine descriptions; `kind: "palette"` reports
 `opened`/`closed` in the windowed client. JSON strings are data, never shell code.
 
-For a simple wmenu integration, connect stdin to a FIFO of your choosing:
+### Replies and subscriptions
 
-```sh
-control=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/bug.XXXXXX")
-mkfifo -m 600 "$control/commands"
-# Open read/write so command writers can come and go without EOF stopping input.
-target/debug/bug 0<>"$control/commands" >"$control/events.jsonl" &
-echo "$control"
+Give a command a numeric `request_id` to receive a single completion record.
+The caller chooses an ID unique among its outstanding commands on that connection.
+For example, this exchange opens a view and evaluates on exactly that view:
+
+```jsonl
+{"cmd":"open","url":"about:blank","wait_for_load":true,"request_id":7}
+{"reply_to":7,"result":{"view":3}}
+{"cmd":"eval","view":3,"script":"6 * 7","request_id":8}
+{"reply_to":8,"result":{"type":"json","value":42}}
 ```
 
-Bind `examples/wmenu-open /path/printed/above/commands` in your WM. The FIFO is an
-optional external controller transport; it adds no broker between Rust and C++.
-Controllers can instead launch Bug directly with ordinary subprocess pipes.
-Stdin EOF stops command input without closing windows. Remove the control directory
-after the process exits. Window focusing on Wayland is subject to compositor policy;
-your WM's own focus commands are preferable.
+A failed command returns `reply_to` and `error.message`. An evaluation exception
+also includes its JavaScript error name. Notifications such as `opened` and
+`loaded` have an `event` field and may arrive between replies. A view argument
+accepts a numeric ID, `"focused"`, or `"last_focused"`.
+Commands without `request_id` on stdin keep their original event-based behavior.
+
+Use ordinary subprocess pipes to drive a child Bug. For an existing instance,
+connect to the Unix socket printed by `bug socket`. Send one JSON command per
+line with a request ID and keep the connection open while awaiting replies.
+Socket clients initially receive only replies. Send `subscribe` to request view
+notifications. Each view's delegated callbacks belong to one controller at a time.
+Disconnecting releases its handlers and settles outstanding prompts. A slow
+reader has a bounded output queue (256 records and 16 MiB); exceeding either
+limit disconnects its controller. After reconnecting, request `list` for current
+state. Stdin EOF releases delegated handlers and leaves windows open.
 
 ## Checks
 
@@ -491,7 +540,7 @@ nix-shell --run 'cargo test --locked && cargo clippy --locked --all-targets -- -
 nix-shell --run 'python3 tests/render.py && tests/no-qt'
 nix-shell --run 'env -u DISPLAY -u WAYLAND_DISPLAY cargo test --locked --no-default-features --test library -- --ignored'
 nix-shell --run 'cargo build --locked && python3 tests/headless.py'
-nix-shell --run 'python3 tests/features.py'
+nix-shell --run 'python3 tests/features.py && python3 tests/cli.py'
 nix-shell --arg withTests true --run 'xvfb-run -a -s "-screen 0 1280x1024x24" python3 tests/smoke.py'
 nix-shell --arg withTests true --run 'python3 tests/wayland.py'
 ```

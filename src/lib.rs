@@ -9,6 +9,7 @@ pub const COMMIT: &str = env!("BUG_COMMIT");
 
 mod browser;
 pub mod clients;
+pub mod commands;
 mod engine;
 mod evaluation;
 mod request;

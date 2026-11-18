@@ -1,10 +1,10 @@
 //! The external scripting protocol. Engine calls themselves stay in-process.
 use crate::{
     Browser, BrowserEvent, EvaluationResult, Frame, SessionSnapshot, ViewMetadata, Viewport,
-    clients::{Control, Controller},
+    clients::Control,
 };
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Read, Write};
+use std::io::Read;
 
 /// One JSON object per line on stdin. IDs are stable for the lifetime of a view.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -124,6 +124,15 @@ pub enum Command {
         view: u64,
         script: String,
     },
+    ZoomIn {
+        view: u64,
+    },
+    ZoomOut {
+        view: u64,
+    },
+    ResetZoom {
+        view: u64,
+    },
     Zoom {
         view: u64,
         factor: f64,
@@ -165,7 +174,12 @@ fn default_scale() -> f64 {
 impl Command {
     pub fn parse(line: &str) -> Result<Self, String> {
         let command: Self = serde_json::from_str(line).map_err(|e| e.to_string())?;
-        match &command {
+        command.validate()?;
+        Ok(command)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        match self {
             Self::Open { url, .. } | Self::Navigate { url, .. } if url.contains('\0') => {
                 return Err("URL contains a NUL byte".into());
             }
@@ -174,7 +188,7 @@ impl Command {
             }
             _ => {}
         }
-        Ok(command)
+        Ok(())
     }
 
     /// Adapt a wire command to the library API. No window system is involved.
@@ -299,7 +313,8 @@ impl Command {
                 url,
                 document_start_script,
             } => {
-                browser.open_with_document_start_script(&url, &document_start_script)?;
+                let view = browser.open_with_document_start_script(&url, &document_start_script)?;
+                return Ok((Control::Continue, Some(Event::Opened { view })));
             }
             Self::Navigate { view, url } => browser.navigate(view, &url)?,
             Self::Back { view } => browser.back(view)?,
@@ -316,6 +331,13 @@ impl Command {
                         request: browser.eval(view, &script)?,
                     }),
                 ));
+            }
+            Self::ZoomIn { view } => crate::commands::Action::ZoomIn.adjust_zoom(browser, view)?,
+            Self::ZoomOut { view } => {
+                crate::commands::Action::ZoomOut.adjust_zoom(browser, view)?
+            }
+            Self::ResetZoom { view } => {
+                crate::commands::Action::ResetZoom.adjust_zoom(browser, view)?
             }
             Self::Zoom { view, factor } => browser.set_zoom(view, factor)?,
             Self::SetLoadScript { view, script } => browser.set_load_script(view, &script)?,
@@ -356,6 +378,8 @@ impl Command {
                             .views()
                             .map(|v| ViewInfo {
                                 view: v.id,
+                                focused: browser.focused_view() == Some(v.id),
+                                last_focused: browser.last_focused_view() == Some(v.id),
                                 url: v.url.clone(),
                                 title: v.title.clone(),
                                 viewport: v.viewport,
@@ -374,6 +398,8 @@ impl Command {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ViewInfo {
+    pub focused: bool,
+    pub last_focused: bool,
     pub view: u64,
     pub url: String,
     pub title: String,
@@ -576,111 +602,9 @@ impl Event {
     }
 }
 
-/// JSON is an adapter, not the Browser API. Input is read off-thread; all
-/// browser operations remain on the client's initializing thread.
-pub struct JsonController<W> {
-    incoming: std::sync::mpsc::Receiver<Result<Command, String>>,
-    output: W,
-    notifications: Option<Vec<Notification>>,
-    delegated_views: std::collections::HashSet<u64>,
-}
-impl<W: Write> JsonController<W> {
-    pub fn new<R: BufRead + Send + 'static>(mut input: R, output: W) -> Self {
-        let (sender, incoming) = std::sync::mpsc::sync_channel(64);
-        std::thread::spawn(move || {
-            loop {
-                let mut line = String::new();
-                let mut capped = (&mut input).take(1024 * 1024 + 1);
-                let command = match capped.read_line(&mut line) {
-                    Ok(0) => break,
-                    Err(error) => {
-                        let _ = sender.send(Err(error.to_string()));
-                        break;
-                    }
-                    Ok(_) if line.len() > 1024 * 1024 => {
-                        if !line.ends_with('\n') {
-                            let _ = input.skip_until(b'\n');
-                        }
-                        Err("command exceeds 1 MiB".into())
-                    }
-                    Ok(_) => Command::parse(&line),
-                };
-                if sender.send(command).is_err() {
-                    break;
-                }
-            }
-        });
-        Self {
-            incoming,
-            output,
-            notifications: None,
-            delegated_views: Default::default(),
-        }
-    }
-    fn emit(&mut self, event: Event) {
-        if serde_json::to_writer(&mut self.output, &event).is_ok() {
-            let _ = writeln!(self.output);
-            let _ = self.output.flush();
-        }
-    }
-}
-impl<W: Write> Controller for JsonController<W> {
-    fn started(&mut self) {
-        self.emit(Event::Ready { protocol: 1 });
-    }
-    fn update(&mut self, browser: &mut Browser) -> Result<Control, String> {
-        // Bound each turn so a busy pipe cannot starve rendering or input.
-        for _ in 0..64 {
-            let command = match self.incoming.try_recv() {
-                Ok(command) => command,
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    for view in self.delegated_views.drain() {
-                        // A native close may already have removed this view.
-                        let _ = browser.set_request_handlers(view, &[]);
-                    }
-                    break;
-                }
-            };
-            let registration = match &command {
-                Ok(Command::SetRequestHandlers { view, kinds }) => Some((*view, !kinds.is_empty())),
-                _ => None,
-            };
-            match command.and_then(|command| command.execute(browser)) {
-                Ok((control, event)) => {
-                    if let Some((view, delegated)) = registration {
-                        if delegated {
-                            self.delegated_views.insert(view);
-                        } else {
-                            self.delegated_views.remove(&view);
-                        }
-                    }
-                    if let Some(event) = event {
-                        if let Event::Subscribed { events } = &event {
-                            self.notifications.clone_from(events);
-                        }
-                        self.emit(event);
-                    }
-                    if control == Control::Quit {
-                        return Ok(control);
-                    }
-                }
-                Err(message) => self.emit(Event::Error { message }),
-            }
-        }
-        Ok(Control::Continue)
-    }
-    fn event(&mut self, event: &BrowserEvent) {
-        if let BrowserEvent::Closed { view } = event {
-            self.delegated_views.remove(view);
-        }
-        if let Some(event) = Event::from_browser(event)
-            && !matches!((&self.notifications, event.notification()), (Some(allowed), Some(kind)) if !allowed.contains(&kind))
-        {
-            self.emit(event);
-        }
-    }
-}
+mod controller;
+mod output;
+pub use controller::JsonController;
 
 /// Read a versioned session document with a bounded allocation.
 pub fn read_session(path: impl AsRef<std::path::Path>) -> Result<SessionSnapshot, String> {

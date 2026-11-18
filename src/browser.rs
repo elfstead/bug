@@ -225,6 +225,8 @@ pub struct Browser {
     engine: Engine,
     views: BTreeMap<ViewId, ViewState>,
     events: VecDeque<BrowserEvent>,
+    focused: Option<ViewId>,
+    last_focused: Option<ViewId>,
     default_viewport: Viewport,
     next_evaluation: EvaluationId,
     evaluations: BTreeMap<EvaluationId, Evaluation>,
@@ -266,6 +268,8 @@ impl Browser {
             engine: Engine::load(&library, &executable, &profile)?,
             views: BTreeMap::new(),
             events: VecDeque::new(),
+            focused: None,
+            last_focused: None,
             default_viewport: options.viewport,
             next_evaluation: 1,
             evaluations: BTreeMap::new(),
@@ -570,6 +574,12 @@ impl Browser {
         self.events.push_back(BrowserEvent::FocusRequested { view });
         Ok(())
     }
+    pub fn focused_view(&self) -> Option<ViewId> {
+        self.focused
+    }
+    pub fn last_focused_view(&self) -> Option<ViewId> {
+        self.last_focused
+    }
     /// Report actual focus from the client to the renderer.
     pub fn set_focused(&mut self, view: ViewId, focused: bool) -> Result<(), String> {
         self.engine.action(
@@ -583,7 +593,11 @@ impl Browser {
             0.,
         )?;
         if focused {
+            self.focused = Some(view);
+            self.last_focused = Some(view);
             self.events.push_back(BrowserEvent::Focused { view });
+        } else if self.focused == Some(view) {
+            self.focused = None;
         }
         Ok(())
     }
@@ -694,6 +708,12 @@ impl Browser {
                 events::CLOSED => {
                     self.cancel_evaluations(view, "view closed");
                     self.views.remove(&view);
+                    if self.focused == Some(view) {
+                        self.focused = None;
+                    }
+                    if self.last_focused == Some(view) {
+                        self.last_focused = None;
+                    }
                     BrowserEvent::Closed { view }
                 }
                 events::TITLE => {

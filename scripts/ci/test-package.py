@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix='bug release test ') as temporary:
     binary = next(work.glob('bug-*/bin/bug'))
     for name in ('tests', 'examples', 'build'):
         (work / name).mkdir()
-    for name in ('tests/headless.py', 'tests/features.py', 'tests/smoke.py',
+    for name in ('tests/headless.py', 'tests/cli.py', 'tests/features.py', 'tests/smoke.py',
                  'tests/capture_x11.py', 'examples/smoke.html'):
         shutil.copy2(root / name, work / name)
     env = os.environ.copy()
@@ -36,7 +36,8 @@ with tempfile.TemporaryDirectory(prefix='bug release test ') as temporary:
         info = json.loads((binary.parent.parent / 'build.json').read_text())
         version = subprocess.check_output([binary, '--version'], cwd=work, env=env, text=True).strip()
         assert version == f'bug {info["build_id"]} ({info["commit"]})', version
-        for test in ('headless.py', 'features.py'):
+        assert os.access(binary.with_name('wmenu-open'), os.X_OK)
+        for test in ('headless.py', 'features.py', 'cli.py'):
             subprocess.run([sys.executable, work / 'tests' / test], cwd=work, env=env,
                            timeout=240, check=True)
         if platform.system() == 'Linux':

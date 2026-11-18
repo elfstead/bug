@@ -1,39 +1,22 @@
-use crate::{Browser, ViewId};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
+use crate::{
+    Browser, EvaluationResult, ViewId,
+    commands::{ACTIONS, Action},
+};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap};
+use std::cell::RefCell;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
-    Navigate,
-    Open,
-    Back,
-    Forward,
-    Reload,
-    Stop,
-    Close,
-    ZoomIn,
-    ZoomOut,
-    ResetZoom,
-    Quit,
+// Font discovery and glyph rasterization are shared by palettes on this window thread.
+thread_local! {
+    static FONTS: RefCell<(FontSystem, SwashCache)> = RefCell::new((FontSystem::new(), SwashCache::new()));
 }
-const ACTIONS: &[(Action, &str)] = &[
-    (Action::Navigate, "Navigate to URL"),
-    (Action::Open, "New window"),
-    (Action::Back, "Back"),
-    (Action::Forward, "Forward"),
-    (Action::Reload, "Reload"),
-    (Action::Stop, "Stop loading"),
-    (Action::Close, "Close window"),
-    (Action::ZoomIn, "Zoom in"),
-    (Action::ZoomOut, "Zoom out"),
-    (Action::ResetZoom, "Reset zoom"),
-    (Action::Quit, "Quit"),
-];
 
 #[derive(Default)]
 pub(super) struct Palette {
     query: String,
     selected: usize,
     prompt: Option<Action>,
+    evaluation: Option<u64>,
+    output: Option<String>,
 }
 pub(super) enum Result {
     Keep,
@@ -43,13 +26,16 @@ pub(super) enum Result {
 
 impl Palette {
     pub fn query(&self) -> &str {
-        &self.query
+        self.output.as_deref().unwrap_or(&self.query)
     }
     fn matches(&self) -> Vec<(Action, &'static str)> {
+        let query = self.query.to_lowercase();
         ACTIONS
             .iter()
-            .copied()
-            .filter(|(_, label)| label.to_lowercase().contains(&self.query.to_lowercase()))
+            .filter(|entry| {
+                entry.label.to_lowercase().contains(&query) || entry.name.contains(&query)
+            })
+            .map(|entry| (entry.action, entry.label))
             .collect()
     }
     pub fn text(&mut self, text: &str) {
@@ -65,6 +51,8 @@ impl Palette {
         self.selected = 0;
     }
     pub fn clear(&mut self) {
+        self.output = None;
+        self.evaluation = None;
         self.query.clear();
         self.selected = 0;
     }
@@ -75,7 +63,11 @@ impl Palette {
         }
     }
     pub fn escape(&mut self) -> Result {
-        if self.prompt.take().is_some() {
+        if self.output.take().is_some() {
+            self.evaluation = None;
+            self.clear();
+            Result::Keep
+        } else if self.prompt.take().is_some() {
             self.clear();
             Result::Keep
         } else {
@@ -87,6 +79,15 @@ impl Palette {
         browser: &mut Browser,
         view: ViewId,
     ) -> std::result::Result<Result, String> {
+        if self.output.is_some() {
+            return Ok(self.escape());
+        }
+        if let Some(Action::Eval) = self.prompt {
+            self.evaluation = Some(browser.eval(view, &self.query)?);
+            self.output = Some("Evaluating…".into());
+            self.prompt = None;
+            return Ok(Result::Keep);
+        }
         if let Some(action) = self.prompt {
             let url = self.query.trim();
             if url.is_empty() {
@@ -103,7 +104,7 @@ impl Palette {
             return Ok(Result::Keep);
         };
         match action {
-            Action::Navigate | Action::Open => {
+            Action::Navigate | Action::Open | Action::Eval => {
                 self.prompt = Some(action);
                 self.clear();
                 return Ok(Result::Keep);
@@ -113,17 +114,42 @@ impl Palette {
             Action::Reload => browser.reload(view)?,
             Action::Stop => browser.stop(view)?,
             Action::Close => browser.close(view)?,
-            Action::ZoomIn => browser.set_zoom(view, (browser.view(view)?.zoom * 1.2).min(5.))?,
-            Action::ZoomOut => {
-                browser.set_zoom(view, (browser.view(view)?.zoom / 1.2).max(0.25))?
+            Action::ZoomIn | Action::ZoomOut | Action::ResetZoom => {
+                action.adjust_zoom(browser, view)?
             }
-            Action::ResetZoom => browser.set_zoom(view, 1.)?,
+            Action::Views => {
+                self.output = Some(
+                    browser
+                        .views()
+                        .map(|v| format!("{}  {}  {}", v.id, v.title, v.url))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+                return Ok(Result::Keep);
+            }
             Action::Quit => return Ok(Result::Quit),
         }
         Ok(Result::Close)
     }
+    pub fn evaluated(&mut self, request: u64, result: &EvaluationResult) -> bool {
+        if self.evaluation != Some(request) {
+            return false;
+        }
+        self.evaluation = None;
+        self.output = Some(match result {
+            EvaluationResult::Json { value } => value
+                .as_str()
+                .map_or_else(|| value.to_string(), str::to_owned),
+            EvaluationResult::Undefined => "undefined".into(),
+            EvaluationResult::Number { value } | EvaluationResult::Bigint { value } => {
+                value.clone()
+            }
+            EvaluationResult::Error { name, message, .. } => format!("{name}: {message}"),
+        });
+        true
+    }
     pub fn click(&mut self, x: i32, y: i32, width: u32, height: u32, scale: f64) -> bool {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.output.is_some() {
             return false;
         }
         let layout = Layout::new(width, height, scale);
@@ -155,8 +181,10 @@ impl Palette {
         canvas.rect(l.x, l.y, l.width, l.height, 0x18212b);
         canvas.rect(l.x, l.y, l.width, 2 * l.unit, 0x88cfb0);
         let title = match self.prompt {
+            Some(Action::Eval) => "EVALUATE - enter JavaScript",
             Some(Action::Open) => "NEW WINDOW - enter URL",
             Some(_) => "NAVIGATE - enter URL",
+            None if self.output.is_some() => "RESULT - copy or Esc to return",
             None => "COMMANDS - type to filter",
         };
         canvas.text(
@@ -167,6 +195,19 @@ impl Palette {
             0x88cfb0,
             l.x + l.width,
         );
+        if let Some(output) = &self.output {
+            for (i, line) in output.lines().take(l.visible_rows() + 1).enumerate() {
+                canvas.text(
+                    l.x + 10 * l.unit,
+                    l.y + (30 + 16 * i) * l.unit,
+                    line,
+                    l.unit,
+                    0xf3f6f8,
+                    l.x + l.width,
+                );
+            }
+            return;
+        }
         let columns = (l.width.saturating_sub(28 * l.unit) / (8 * l.unit)).max(1);
         let tail: String = self
             .query
@@ -265,22 +306,44 @@ impl Canvas<'_> {
             self.pixels[start..end].fill(color);
         }
     }
-    fn text(&mut self, mut x: usize, y: usize, text: &str, unit: usize, color: u32, right: usize) {
-        for c in text.chars() {
-            if x + 8 * unit > right {
-                break;
-            }
-            if let Some(glyph) = BASIC_FONTS.get(c).or_else(|| BASIC_FONTS.get('?')) {
-                for (row, bits) in glyph.iter().enumerate() {
-                    for col in 0..8 {
-                        if bits & (1 << col) != 0 {
-                            self.rect(x + col * unit, y + row * unit, unit, unit, color);
+    fn text(&mut self, x: usize, y: usize, text: &str, unit: usize, color: u32, right: usize) {
+        let width = right.min(self.width).saturating_sub(x);
+        if width == 0 || y >= self.height {
+            return;
+        }
+        FONTS.with_borrow_mut(|(fonts, cache)| {
+            let mut line = Buffer::new_empty(Metrics::new(11.0 * unit as f32, 14.0 * unit as f32));
+            line.set_size(Some(width as f32), None);
+            line.set_wrap(Wrap::None);
+            line.set_text(
+                text,
+                &Attrs::new().family(Family::SansSerif),
+                Shaping::Advanced,
+                None,
+            );
+            line.draw(
+                fonts,
+                cache,
+                Color(color | 0xff000000),
+                |dx, dy, w, h, ink| {
+                    let left = x as i32 + dx;
+                    let top = y as i32 + dy;
+                    let alpha = u32::from(ink.a());
+                    for row in top.max(0)..(top + h as i32).min(self.height as i32) {
+                        for col in left.max(x as i32)..(left + w as i32).min((x + width) as i32) {
+                            let pixel = &mut self.pixels[row as usize * self.width + col as usize];
+                            let blend = |shift: u32| {
+                                ((((ink.0 >> shift) & 255) * alpha
+                                    + ((*pixel >> shift) & 255) * (255 - alpha))
+                                    / 255)
+                                    << shift
+                            };
+                            *pixel = blend(16) | blend(8) | blend(0);
                         }
                     }
-                }
-            }
-            x += 8 * unit;
-        }
+                },
+            );
+        });
     }
 }
 

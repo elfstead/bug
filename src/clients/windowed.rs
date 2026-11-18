@@ -173,6 +173,18 @@ impl<C: Controller> App<C> {
                         page.file_picker = Some(FilePicker::open(picker));
                     }
                 }
+                BrowserEvent::Evaluated {
+                    view,
+                    request,
+                    result,
+                } => {
+                    if let Some(page) = self.pages.values_mut().find(|p| p.view == view)
+                        && let Some(palette) = &mut page.palette
+                        && palette.evaluated(request, &result)
+                    {
+                        page.window.request_redraw();
+                    }
+                }
                 BrowserEvent::ClipboardChanged { text } => {
                     if let Some(clipboard) = &mut self.clipboard
                         && let Err(message) = clipboard.write(&text)

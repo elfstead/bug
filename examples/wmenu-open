@@ -1,14 +1,12 @@
-#!/usr/bin/env bash
-# Usage: examples/wmenu-open /path/to/bug.commands
-set -euo pipefail
-if [[ $# != 1 || ! -p $1 ]]; then
-    echo 'Usage: wmenu-open PATH_TO_COMMAND_FIFO' >&2
-    exit 2
-fi
-bug_url=$(wmenu -p 'URL') || exit 0
-[[ -n $bug_url ]] || exit 0
-python3 - "$1" "$bug_url" <<'PY'
-import json, sys
-with open(sys.argv[1], 'w') as commands:
-    commands.write(json.dumps({'cmd': 'open', 'url': sys.argv[2]}) + '\n')
-PY
+#!/bin/sh
+# With bin/ on PATH, bind this helper directly in Sway.
+set -eu
+url=$(wmenu -p URL </dev/null) || exit 0
+[ -n "$url" ] || exit 0
+case $# in
+    0) exec bug -- "$url" ;;
+    1) # Compatibility with the original FIFO-based binding.
+       [ -p "$1" ] || { echo "expected a command FIFO" >&2; exit 2; }
+       exec python3 -c 'import json, sys; print(json.dumps({"cmd": "open", "url": sys.argv[1]}))' "$url" > "$1" ;;
+    *) echo "usage: wmenu-open [command-fifo]" >&2; exit 2 ;;
+esac
